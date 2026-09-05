@@ -137,6 +137,13 @@ def main():
     im.add_argument("outfile")
     im.add_argument("--start", type=int, default=0)
     im.add_argument("--count", type=int, default=0, help="0 = kapasite sonuna kadar")
+    sub.add_parser("probe", help="CID/CSD yazilabilirlik testi (CMD26/CMD27, guvenli: kendi degerini geri yazar)")
+    ex2 = sub.add_parser("export", help="kart bilgilerini JSON olarak kaydet")
+    ex2.add_argument("outfile")
+    wi = sub.add_parser("writeimage", help="img dosyasini karta yaz (SPI, yavas)")
+    wi.add_argument("imgfile")
+    wi.add_argument("--start", type=int, default=0)
+    wi.add_argument("--verify", action="store_true", help="yazilan bloklari geri okuyup karsilastir")
 
     args = p.parse_args()
 
@@ -297,6 +304,71 @@ def main():
             print("  sure   : %.1f dk" % (el / 60))
             print("  md5    : %s" % md5.hexdigest())
             print("  sha256 : %s" % sha.hexdigest())
+        elif args.cmd == "probe":
+            cid = sd.cid()
+            print("Mevcut CID : %s" % cid.hex().upper())
+            try:
+                sd.write_cid(cid)
+                print("CMD26 (CID yazma): DESTEKLIYOR (kendi CID'i geri yazildi, dogrulandi: %s)"
+                      % ("OK" if sd.cid() == cid else "FARKLI!"))
+            except sdlib.SDError as e:
+                print("CMD26 (CID yazma): desteklenmiyor (%s)" % e)
+            try:
+                csd = sd.csd()
+                sd.write_csd(csd)
+                print("CMD27 (CSD yazma): DESTEKLIYOR (kendi CSD'i geri yazildi)")
+            except sdlib.SDError as e:
+                print("CMD27 (CSD yazma): desteklenmiyor (%s)" % e)
+        elif args.cmd == "export":
+            import json
+            import datetime
+            info = {"zaman": datetime.datetime.now().isoformat()}
+            cid = sd.cid()
+            info["cid"] = cid.hex().upper()
+            info["cid_decoded"] = sdlib.decode_cid(cid)
+            csd = sd.csd()
+            info["csd"] = csd.hex().upper()
+            info["csd_decoded"] = sdlib.decode_csd(csd)
+            try:
+                info["scr"] = sd.scr().hex().upper()
+            except sdlib.SDError:
+                info["scr"] = None
+            rca = sd.rca()
+            info["rca"] = "%04X" % rca if rca is not None else None
+            info["ocr"] = sd.ocr.hex().upper() if sd.ocr else None
+            with open(args.outfile, "w") as f:
+                json.dump(info, f, indent=2, ensure_ascii=False)
+            print("kaydedildi: %s" % args.outfile)
+        elif args.cmd == "writeimage":
+            import os
+            import time as _t
+            cap = sdlib.decode_csd(sd.csd())["capacity"]
+            max_blocks = cap // 512
+            total = os.path.getsize(args.imgfile) // 512
+            if args.start + total > max_blocks:
+                print("HATA: imaj karttan buyuk (kart %d blok, imaj %d blok)" % (max_blocks, total))
+                sys.exit(1)
+            with open(args.imgfile, "rb") as f:
+                f.seek(args.start * 512)
+                t0 = _t.time()
+                done = 0
+                while True:
+                    data = f.read(512)
+                    if not data:
+                        break
+                    sd.write_block(args.start + done, data.ljust(512, b"\x00"))
+                    if args.verify and sd.read_block(args.start + done) != data.ljust(512, b"\x00"):
+                        print("\nHATA: dogrulama hatasi blok %d" % (args.start + done))
+                        sys.exit(1)
+                    done += 1
+                    if done % 64 == 0 or done == total:
+                        el = _t.time() - t0
+                        pct = 100.0 * done / total
+                        eta = el / done * (total - done)
+                        sys.stdout.write("\r%8d / %d blok  %5.1f%%  %.0f KB/s  ETA %.0f sn   "
+                                         % (done, total, pct, (done * 512 / 1024) / el, eta))
+                        sys.stdout.flush()
+            print("\nWRITE OK: %d blok, %.1f dk" % (done, (_t.time() - t0) / 60))
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
