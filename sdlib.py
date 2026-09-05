@@ -228,6 +228,11 @@ class SD:
                 log("CMD26 token yok (%#x), busy bekleniyor" % (resp if resp is not None else 0xFF))
                 self._wait_busy(5.0)
                 log("CMD26 busy bitti -> kabul varsayiliyor (dogrulama CID okumasiyla)")
+        # programlama tamamlansin: bol saat + bekleme (CMD0'i erken atmayalim)
+        t0 = time.time()
+        while time.time() - t0 < 0.3:
+            self.spi.xfer2([0xFF] * 16)
+        time.sleep(0.2)
         self.init()
         return accepted
 
