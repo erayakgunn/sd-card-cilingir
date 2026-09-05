@@ -121,6 +121,36 @@ def decode_cid(cid):
                 date_b="%04d-%02d" % (year_b, month_b))
 
 
+def _csd_bit(csd, pos):
+    return (csd[15 - (pos >> 3)] >> (pos & 7)) & 1
+
+
+def _csd_bits(csd, hi, lo):
+    v = 0
+    for p in range(hi, lo - 1, -1):
+        v = (v << 1) | _csd_bit(csd, p)
+    return v
+
+
+def decode_csd(csd):
+    structure = _csd_bits(csd, 127, 126)
+    read_bl_len = _csd_bits(csd, 83, 80)
+    write_bl_len = _csd_bits(csd, 25, 22)
+    trans_speed = _csd_bits(csd, 111, 104)
+    if structure == 0:
+        c_size = _csd_bits(csd, 73, 62)
+        c_mult = _csd_bits(csd, 49, 47)
+        capacity = (c_size + 1) * (1 << (c_mult + 2)) * (1 << read_bl_len)
+        kind = "SDSC (standard capacity)"
+    else:
+        c_size = _csd_bits(csd, 69, 48)
+        capacity = (c_size + 1) * (1 << 19)
+        kind = "SDHC/SDXC"
+    return dict(structure=structure, read_bl_len=read_bl_len,
+                write_bl_len=write_bl_len, trans_speed=trans_speed,
+                c_size=c_size, capacity=capacity, kind=kind)
+
+
 def main():
     global DEBUG
     args = sys.argv[1:]
@@ -136,6 +166,12 @@ def main():
         csd = sd.csd()
         print("CID  :", cid.hex().upper())
         print("CSD  :", csd.hex().upper())
+        d2 = decode_csd(csd)
+        print("CSD  type      : %s" % d2["kind"])
+        print("CSD  capacity  : %d bytes (%.1f MiB / %.2f GiB)" % (
+            d2["capacity"], d2["capacity"] / 1048576, d2["capacity"] / 1073741824))
+        print("CSD  read blk  : %d bytes" % (1 << d2["read_bl_len"]))
+        print("CSD  write blk : %d bytes" % (1 << d2["write_bl_len"]))
         d = decode_cid(cid)
         print("MID  (Manufacturer ID): 0x%02X" % d["mid"])
         print("OID  (OEM/App ID)     : %r" % d["oid"])
