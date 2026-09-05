@@ -70,7 +70,10 @@ def cmd_fatinfo(sd):
     tot32 = int.from_bytes(bs[0x20:0x24], "little")
     fatsz32 = int.from_bytes(bs[0x24:0x28], "little")
     label = bs[0x2B:0x36].decode("ascii", "replace").strip()
-    fstype = bs[0x36:0x42].decode("ascii", "replace").strip("\x00 ")
+    if fatsz16:
+        fstype = bs[0x36:0x3E].decode("ascii", "replace").strip("\x00 ")
+    else:
+        fstype = bs[0x52:0x5A].decode("ascii", "replace").strip("\x00 ")
     print("OEM            : %r" % bs[3:11].decode("ascii", "replace"))
     print("bytes/sector   : %d" % bps)
     print("sectors/cluster: %d" % spc)
