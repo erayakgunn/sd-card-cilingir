@@ -332,6 +332,13 @@ def main():
                     print("CMD26 (idle) : reddedildi")
             except sdlib.SDError as e:
                 print("CMD26 (idle) : hata (%s)" % e)
+                try:
+                    sd.init()
+                    print("  -> kartin su anki CID: %s %s"
+                          % (sd.cid().hex().upper(),
+                             "(DEGISTI!)" if sd.cid() != cid else "(ayni, degismedi)"))
+                except sdlib.SDError as e2:
+                    print("  -> kart hazirlanamadi: %s" % e2)
             try:
                 csd = sd.csd()
                 sd.write_csd(csd)

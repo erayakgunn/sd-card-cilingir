@@ -201,6 +201,7 @@ class SD:
         # idle biti setli + illegal biti temiz = kabul
         accepted = r1 is not None and (r1 & 0x01) and not (r1 & 0x04)
         if accepted:
+            self.spi.xfer2([0xFF] * 4)
             self.spi.xfer2([0xFE] + list(cid_bytes) + [0xFF, 0xFF])
             self._expect_data_response(26)
         self.init()
@@ -221,10 +222,10 @@ class SD:
         self._expect_data_response(cmd)
 
     def _expect_data_response(self, cmd):
-        rx = self.spi.xfer2([0xFF] * 8)
+        rx = self.spi.xfer2([0xFF] * 16)
         resp = None
         for b in rx:
-            if b != 0xFF:
+            if (b & 0x1F) in (0x05, 0x0B, 0x0D):
                 resp = b & 0x1F
                 break
         # 0x05 = kabul, 0x0B = CRC hatasi, 0x0D = yazma hatasi
