@@ -215,13 +215,14 @@ def main():
                 print("HATA: CID 16 bayt olmali.")
                 sys.exit(1)
             if args.idle:
-                ok = sd.try_write_cid_idle(data)
+                ok, variant = sd.program_cid_idle(data, args.hex.upper())
                 if not ok:
-                    print("HATA: kart idle durumunda CMD26'yi reddetti.")
+                    print("HATA: hicbir varyant commit etmedi (kart CID yazmayi geri çevirdi).")
                     sys.exit(1)
+                print("CID commit edildi (varyant: %s)." % variant)
             else:
                 sd.write_cid(data)
-            print("CID yazildi. Yeni CID: %s" % sd.cid().hex().upper())
+            print("Mevcut CID: %s" % sd.cid().hex().upper())
         elif args.cmd == "writecsd":
             sd.write_csd(hex_bytes(args.hex))
             print("CSD yazildi.")

@@ -236,6 +236,47 @@ class SD:
         self.init()
         return accepted
 
+    def program_cid_idle(self, cid_bytes, target_hex):
+        """Idle CMD26 varyantlarini dener, her seferinde okuma ile dogrular.
+        Donus: (commit_edildi, varyant_adi)."""
+        c = crc16(cid_bytes)
+        blk_crc = [(c >> 8) & 0xFF, c & 0xFF]
+        variants = ["prompt", "token"]
+        for v in variants:
+            r1, _, _ = self.cmd(0, 0, 0x95)
+            if r1 != 0x01:
+                raise SDError("CMD0 reset failed r1=%#x" % (r1 or 0))
+            frame = self._send_cmd(26, 0, 0x00)
+            rx = self.spi.xfer2(frame + [0xFF] * 8)
+            r1, _ = self._r1_of(rx, len(frame))
+            if r1 is None or not (r1 & 0x01) or (r1 & 0x04):
+                log("CMD26 (%s) durumda reddedildi r1=%s" % (v, r1))
+                continue
+            if v == "prompt":
+                rxp = self.spi.xfer2([0xFF] * 32)
+                log("prompt aramasi: %s" % bytes(rxp).hex())
+                if 0xFE not in rxp:
+                    log("prompt gelmedi, bu varyant atlandi")
+                    self.init()
+                    continue
+                self.spi.xfer2(list(cid_bytes) + blk_crc)
+                rxx = self.spi.xfer2([0xFF] * 32)
+                log("prompt-veri sonrasi: %s" % bytes(rxx).hex())
+            else:
+                self.spi.xfer2([0xFE] + list(cid_bytes) + blk_crc)
+                rxx = self.spi.xfer2([0xFF] * 32)
+                log("token-veri sonrasi: %s" % bytes(rxx).hex())
+            t0 = time.time()
+            while time.time() - t0 < 0.3:
+                self.spi.xfer2([0xFF] * 16)
+            time.sleep(0.2)
+            self.init()
+            now = self.read_register(10)
+            if now.hex().upper() == target_hex:
+                return True, v
+            log("varyant %s: commit yok, CID hala %s" % (v, now.hex().upper()))
+        return False, None
+
     def write_csd(self, csd_bytes):
         self._write_register(27, csd_bytes, "CSD")
 
@@ -317,6 +358,17 @@ class SD:
         if r1 != 0x00:
             raise SDError("CMD38 r1=%s" % r1)
         self._wait_busy(60)
+
+
+def crc16(data):
+    """CRC16-CCITT (poly 0x1021, init 0, MSB-first) — SD veri bloklari."""
+    crc = 0
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if (crc & 0x8000) else (crc << 1)
+            crc &= 0xFFFF
+    return crc
 
 
 def decode_cid(cid):
