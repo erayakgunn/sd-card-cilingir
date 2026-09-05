@@ -133,6 +133,10 @@ def main():
     spd = sub.add_parser("speed", help="okuma hizi testi")
     spd.add_argument("--start", type=int, default=235)
     spd.add_argument("--count", type=int, default=256)
+    im = sub.add_parser("image", help="tum karti .img dosyasina aktar (SPI)")
+    im.add_argument("outfile")
+    im.add_argument("--start", type=int, default=0)
+    im.add_argument("--count", type=int, default=0, help="0 = kapasite sonuna kadar")
 
     args = p.parse_args()
 
@@ -264,6 +268,35 @@ def main():
             dt = _t.time() - t0
             kb = args.count * 512 / 1024
             print("%d blok / %.2f sn = %.0f KB/s (%.2f MB/s)" % (args.count, dt, kb / dt, kb / 1024 / dt))
+        elif args.cmd == "image":
+            import time as _t
+            import hashlib
+            cap = sdlib.decode_csd(sd.csd())["capacity"]
+            total_blocks = args.count if args.count else cap // 512
+            md5 = hashlib.md5()
+            sha = hashlib.sha256()
+            t0 = _t.time()
+            done = 0
+            with open(args.outfile, "wb") as f:
+                for i in range(args.start, args.start + total_blocks):
+                    data = sd.read_block(i)
+                    f.write(data)
+                    md5.update(data)
+                    sha.update(data)
+                    done += 1
+                    if done % 256 == 0 or done == total_blocks:
+                        el = _t.time() - t0
+                        pct = 100.0 * done / total_blocks
+                        eta = el / done * (total_blocks - done)
+                        sys.stdout.write("\r%8d / %d blok  %5.1f%%  %.0f KB/s  ETA %.0f sn   "
+                                         % (done, total_blocks, pct, (done * 512 / 1024) / el, eta))
+                        sys.stdout.flush()
+            el = _t.time() - t0
+            print("\nIMAGE OK: %s" % args.outfile)
+            print("  blocks : %d (%d bayt)" % (done, done * 512))
+            print("  sure   : %.1f dk" % (el / 60))
+            print("  md5    : %s" % md5.hexdigest())
+            print("  sha256 : %s" % sha.hexdigest())
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
