@@ -9,6 +9,82 @@ def hex_bytes(s):
     return bytes.fromhex(s.replace(" ", "").replace("0x", "").replace(",", ""))
 
 
+PART_TYPES = {
+    0x01: "FAT12",
+    0x04: "FAT16 (<32MB)",
+    0x06: "FAT16B",
+    0x07: "NTFS/exFAT",
+    0x0B: "FAT32",
+    0x0C: "FAT32 (LBA)",
+    0x0E: "FAT16 (LBA)",
+}
+
+
+def hexdump(data, base=0):
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        hs = " ".join("%02X" % b for b in chunk)
+        asc = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        print("%08X  %-47s  |%s|" % (base + off, hs, asc))
+
+
+def find_fat_part(mbr):
+    for i in range(4):
+        e = mbr[446 + i * 16:446 + i * 16 + 16]
+        if e[4] in PART_TYPES:
+            return int.from_bytes(e[8:12], "little"), e[4]
+    return 0, None
+
+
+def cmd_mbr(sd):
+    data = sd.read_block(0)
+    print("MBR imzasi: %02X %02X %s" % (data[510], data[511],
+          "(OK)" if (data[510], data[511]) == (0x55, 0xAA) else "(GECERSIZ!)"))
+    found = False
+    for i in range(4):
+        e = data[446 + i * 16:446 + i * 16 + 16]
+        if e[4] == 0:
+            continue
+        found = True
+        lba = int.from_bytes(e[8:12], "little")
+        cnt = int.from_bytes(e[12:16], "little")
+        name = PART_TYPES.get(e[4], "bilinmeyen")
+        print("Bolum %d: boot=%#02x  tip=%#02x (%s)  bas_LBA=%d  sektor=%d  boyut=%.1f MiB"
+              % (i + 1, e[0], e[4], name, lba, cnt, cnt * 512 / 1048576))
+    if not found:
+        print("Bolum yok (superfloppy — tum kart tek FAT olabilir).")
+
+
+def cmd_fatinfo(sd):
+    mbr = sd.read_block(0)
+    part_start, typ = find_fat_part(mbr)
+    print("Bolum baslangic LBA: %d (tip %s)" % (part_start, PART_TYPES.get(typ, "?")))
+    bs = sd.read_block(part_start)
+    bps = int.from_bytes(bs[0x0B:0x0D], "little")
+    spc = bs[0x0D]
+    reserved = int.from_bytes(bs[0x0E:0x10], "little")
+    nfats = bs[0x10]
+    rootent = int.from_bytes(bs[0x11:0x13], "little")
+    tot16 = int.from_bytes(bs[0x13:0x15], "little")
+    fatsz16 = int.from_bytes(bs[0x16:0x18], "little")
+    tot32 = int.from_bytes(bs[0x20:0x24], "little")
+    fatsz32 = int.from_bytes(bs[0x24:0x28], "little")
+    label = bs[0x2B:0x36].decode("ascii", "replace").strip()
+    fstype = bs[0x36:0x42].decode("ascii", "replace").strip("\x00 ")
+    print("OEM            : %r" % bs[3:11].decode("ascii", "replace"))
+    print("bytes/sector   : %d" % bps)
+    print("sectors/cluster: %d" % spc)
+    print("reserved       : %d" % reserved)
+    print("FAT sayisi     : %d" % nfats)
+    print("root entries   : %d" % rootent)
+    print("FAT size (sec) : %d" % (fatsz16 or fatsz32))
+    print("total sectors  : %d" % (tot16 or tot32))
+    print("volume label   : %r" % label)
+    print("FS tipi        : %r" % fstype)
+    print("imza           : %02X %02X %s" % (bs[510], bs[511],
+          "(OK)" if (bs[510], bs[511]) == (0x55, 0xAA) else "(GECERSIZ!)"))
+
+
 def main():
     p = argparse.ArgumentParser(prog="sdtool", description="SD kart kontrol araci (Pi + SPI).")
     p.add_argument("--bus", type=int, default=0)
@@ -41,6 +117,11 @@ def main():
     er = sub.add_parser("erase", help="blok araligini sil (CMD32/33/38)")
     er.add_argument("start", type=int)
     er.add_argument("end", type=int)
+    sub.add_parser("mbr", help="bolumleme tablosunu coz")
+    sub.add_parser("fatinfo", help="FAT boot sector bilgisi")
+    hd = sub.add_parser("hexdump", help="bloklari okunabilir goster")
+    hd.add_argument("addr", type=int)
+    hd.add_argument("--count", type=int, default=1)
 
     args = p.parse_args()
 
@@ -129,6 +210,13 @@ def main():
         elif args.cmd == "erase":
             sd.erase_blocks(args.start, args.end)
             print("silindi: %d..%d" % (args.start, args.end))
+        elif args.cmd == "mbr":
+            cmd_mbr(sd)
+        elif args.cmd == "fatinfo":
+            cmd_fatinfo(sd)
+        elif args.cmd == "hexdump":
+            for i in range(args.count):
+                hexdump(sd.read_block(args.addr + i), base=(args.addr + i) * 512)
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
