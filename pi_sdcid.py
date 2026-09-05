@@ -96,7 +96,8 @@ class SD:
         return data
 
     def cid(self):
-        return self.read_register(2)
+        # SPI modunda CID, CMD10 (SEND_CID) ile okunur; CMD2 (ALL_SEND_CID) SD-bus moduna aittir.
+        return self.read_register(10)
 
     def csd(self):
         return self.read_register(9)
