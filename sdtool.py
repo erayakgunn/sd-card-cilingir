@@ -94,6 +94,7 @@ def main():
     p.add_argument("--dev", type=int, default=0)
     p.add_argument("--freq", type=int, default=400_000,
                    help="SPI hizi (Hz), init sonrasi uygulanir (orn. 4000000)")
+    p.add_argument("--debug", action="store_true", help="ham SPI diagnostik cikti")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("info", help="CID/CSD/SCR/RCA/OCR oku")
@@ -149,6 +150,7 @@ def main():
 
     args = p.parse_args()
 
+    sdlib.DEBUG = args.debug
     sd = sdlib.SD(args.bus, args.dev, args.freq)
     try:
         sd.init()

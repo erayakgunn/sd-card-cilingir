@@ -201,9 +201,25 @@ class SD:
         # idle biti setli + illegal biti temiz = kabul
         accepted = r1 is not None and (r1 & 0x01) and not (r1 & 0x04)
         if accepted:
-            self.spi.xfer2([0xFF] * 4)
+            # veri hemen gonder (gap veriyi kaydirabilir)
             self.spi.xfer2([0xFE] + list(cid_bytes) + [0xFF, 0xFF])
-            self._expect_data_response(26)
+            rx = self.spi.xfer2([0xFF] * 32)
+            log("CMD26 veri sonrasi: %s" % bytes(rx).hex())
+            resp = None
+            for b in rx:
+                if (b & 0x1F) in (0x05, 0x0B, 0x0D):
+                    resp = b & 0x1F
+                    break
+            if resp == 0x05:
+                self._wait_busy()
+                log("CMD26 veri: token 0x05 (kabul)")
+            elif resp in (0x0B, 0x0D):
+                raise SDError("CMD26 data error %#x" % resp)
+            else:
+                # token yok: kart dogrudan programlamaya gecmis olabilir, busy bekle
+                log("CMD26 token yok (%#x), busy bekleniyor" % (resp if resp is not None else 0xFF))
+                self._wait_busy(5.0)
+                log("CMD26 busy bitti -> kabul varsayiliyor (dogrulama CID okumasiyla)")
         self.init()
         return accepted
 
