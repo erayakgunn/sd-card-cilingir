@@ -79,7 +79,7 @@ class SD:
             log("OCR: %s" % self.ocr.hex().upper())
         return True
 
-    def read_register(self, cmd):
+    def read_register(self, cmd, length=16):
         frame = self._send_cmd(cmd, 0, 0x00)
         rx = self.spi.xfer2(frame + [0xFF] * 64)
         r1, idx = self._r1_of(rx, len(frame))
@@ -91,7 +91,7 @@ class SD:
         if i >= len(rx) or rx[i] != 0xFE:
             raise RuntimeError("CMD%d no data token (%#x)" % (cmd, rx[i] if i < len(rx) else 0xFF))
         i += 1
-        data = bytes(rx[i:i + 16])
+        data = bytes(rx[i:i + length])
         self.spi.xfer2([0xFF] * 2)
         return data
 
@@ -101,6 +101,10 @@ class SD:
 
     def csd(self):
         return self.read_register(9)
+
+    def scr(self):
+        # SCR 8 bayt, CMD51 (SEND_SCR)
+        return self.read_register(51, length=8)
 
 
 def decode_cid(cid):
@@ -151,6 +155,31 @@ def decode_csd(csd):
                 c_size=c_size, capacity=capacity, kind=kind)
 
 
+def decode_scr(scr):
+    # SCR 64 bit, MSB-first 8 bayt
+    structure = scr[0] >> 4
+    sd_spec = scr[0] & 0x0F
+    erase_status = (scr[1] >> 7) & 1
+    security = (scr[1] >> 4) & 0x07
+    bus_widths = scr[1] & 0x0F
+    erase = (scr[3] >> 4) & 0x03
+    cmd_support = scr[3] & 0x07
+    spec_map = {0: "1.0", 1: "1.10", 2: "2.00", 3: "3.00", 4: "4.00", 5: "4.10", 6: "5.00", 7: "5.10"}
+    sec_map = {0: "none", 1: "SDSC", 2: "SDSC+", 3: "SDSC (ext)"}
+    bw = []
+    if bus_widths & 0x01:
+        bw.append("1-bit")
+    if bus_widths & 0x02:
+        bw.append("4-bit")
+    if bus_widths & 0x04:
+        bw.append("8-bit")
+    return dict(structure=structure, sd_spec=spec_map.get(sd_spec, "?"),
+                sd_spec_raw=sd_spec, security=sec_map.get(security, "?"),
+                security_raw=security, erase_status=erase_status,
+                bus_widths=", ".join(bw) or "?", erase=erase,
+                cmd_support=cmd_support)
+
+
 def main():
     global DEBUG
     args = sys.argv[1:]
@@ -181,6 +210,18 @@ def main():
         print("MDT  (raw)            : %s" % d["date_raw"])
         print("MDT  (variant A)      : %s" % d["date_a"])
         print("MDT  (variant B)      : %s  <-- do not activate Linux date field" % d["date_b"])
+        try:
+            scr = sd.scr()
+            print("SCR  :", scr.hex().upper())
+            d3 = decode_scr(scr)
+            print("SCR  SD spec       : SD %s" % d3["sd_spec"])
+            print("SCR  security      : %s" % d3["security"])
+            print("SCR  bus widths    : %s" % d3["bus_widths"])
+            print("SCR  erase support : %s" % ("multi-block" if d3["erase"] else "single-block"))
+            print("SCR  cmd support   : %s" % (", ".join([
+                n for n, bit in [("CMD23", 1), ("CMD32/33", 2), ("CMD34/35", 4)] if d3["cmd_support"] & bit] or ["none"])))
+        except Exception as e:
+            print("SCR  : OKUNAMADI (%s)" % e)
     finally:
         sd.spi.close()
 
