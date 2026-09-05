@@ -76,7 +76,17 @@ class SD:
         r1, rx, idx = self.cmd(58, 0, 0)
         if r1 == 0x00:
             self.ocr = bytes(rx[idx + 1:idx + 5])
+            # bit30 (CCS): 1=SDHC/SDXC (sektor adresi), 0=SDSC (bayt adresi)
+            self.ccs = (self.ocr[0] >> 6) & 1
+        else:
+            self.ccs = 0
+        if not self.ccs:
+            # SDSC: blok uzunlugunu 512'ye sabitle
+            self.cmd(16, 512, 0)
         return True
+
+    def _addr(self, sector):
+        return sector if self.ccs else sector * 512
 
     def read_register(self, cmd, length=16, arg=0):
         frame = self._send_cmd(cmd, arg, 0x00)
@@ -120,7 +130,7 @@ class SD:
         return r1
 
     def read_block(self, addr):
-        frame = self._send_cmd(17, addr)
+        frame = self._send_cmd(17, self._addr(addr))
         rx = self.spi.xfer2(frame + [0xFF] * (1 + 512 + 2 + 8))
         r1, idx = self._r1_of(rx, len(frame))
         if r1 != 0x00:
@@ -136,7 +146,7 @@ class SD:
     def write_block(self, addr, data):
         if len(data) != 512:
             raise SDError("block must be 512 bytes")
-        frame = self._send_cmd(24, addr)
+        frame = self._send_cmd(24, self._addr(addr))
         rx = self.spi.xfer2(frame + [0xFF] * 8)
         r1, _ = self._r1_of(rx, len(frame))
         if r1 != 0x00:
@@ -203,23 +213,23 @@ class SD:
         self._expect_data_response(42)
 
     def set_write_protect(self, addr):
-        r1, _, _ = self.cmd(28, addr, 0)
+        r1, _, _ = self.cmd(28, self._addr(addr), 0)
         if r1 != 0x00:
             raise SDError("CMD28 r1=%s" % r1)
 
     def clear_write_protect(self, addr):
-        r1, _, _ = self.cmd(29, addr, 0)
+        r1, _, _ = self.cmd(29, self._addr(addr), 0)
         if r1 != 0x00:
             raise SDError("CMD29 r1=%s" % r1)
 
     def read_write_protect(self, addr):
-        return self.read_register(30, length=4, arg=addr)
+        return self.read_register(30, length=4, arg=self._addr(addr))
 
     def erase_blocks(self, start, end):
-        r1, _, _ = self.cmd(32, start, 0)
+        r1, _, _ = self.cmd(32, self._addr(start), 0)
         if r1 != 0x00:
             raise SDError("CMD32 r1=%s" % r1)
-        r1, _, _ = self.cmd(33, end, 0)
+        r1, _, _ = self.cmd(33, self._addr(end), 0)
         if r1 != 0x00:
             raise SDError("CMD33 r1=%s" % r1)
         r1, _, _ = self.cmd(38, 0, 0)
