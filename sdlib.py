@@ -236,6 +236,61 @@ class SD:
         self.init()
         return accepted
 
+    def _cmd_frame_crc(self, cmd, arg, mask):
+        arg &= 0xFFFFFFFF
+        f = [((cmd & 0x7F) | 0x40),
+             (arg >> 24) & 0xFF, (arg >> 16) & 0xFF,
+             (arg >> 8) & 0xFF, arg & 0xFF, 0x00]
+        f[5] = (crc7(f[:5], mask) << 1) | 1
+        return f
+
+    def hunt_cid_commit(self, cid_bytes, target_hex):
+        """CRC-on ve komut varyantlariyla CID commit arayisi.
+        Donus: (bulundu, yontem_adi)."""
+        plans = [
+            ("crcon-0x09-cmd26", 0x09, "cmd26"),
+            ("crcon-0x0D-cmd26", 0x0D, "cmd26"),
+            ("crcon-0x09-acmd26", 0x09, "acmd26"),
+            ("crcon-0x0D-acmd26", 0x0D, "acmd26"),
+            ("crcoff-cmd26", None, "cmd26"),
+        ]
+        for name, mask, kind in plans:
+            r1, _, _ = self.cmd(0, 0, 0x95)
+            if r1 != 0x01:
+                raise SDError("CMD0 r1=%#x" % (r1 or 0))
+            if mask is not None:
+                f = self._cmd_frame_crc(59, 1, mask)
+                rx = self.spi.xfer2(f + [0xFF] * 8)
+                r1, _ = self._r1_of(rx, len(f))
+                log("CMD59(mask %s) r1=%s" % (name.split("-")[1], r1))
+                if r1 != 0x01:
+                    continue
+            if kind == "acmd26":
+                f = self._cmd_frame_crc(55, 0, mask) if mask else self._send_cmd(55, 0)
+                rx = self.spi.xfer2(f + [0xFF] * 8)
+                log("CMD55 r1=%s" % (self._r1_of(rx, len(f))[0],))
+            f = self._cmd_frame_crc(26, 0, mask) if mask else self._send_cmd(26, 0, 0x00)
+            rx = self.spi.xfer2(f + [0xFF] * 8)
+            r1, _ = self._r1_of(rx, len(f))
+            log("%s CMD26 r1=%s" % (name, r1))
+            if r1 is None or not (r1 & 0x01) or (r1 & 0x04):
+                continue
+            c = crc16(cid_bytes)
+            self.spi.xfer2([0xFE] + list(cid_bytes) + [(c >> 8) & 0xFF, c & 0xFF])
+            rxx = self.spi.xfer2([0xFF] * 32)
+            log("%s veri sonrasi: %s" % (name, bytes(rxx[:12]).hex()))
+            t0 = time.time()
+            while time.time() - t0 < 0.3:
+                self.spi.xfer2([0xFF] * 16)
+            time.sleep(0.2)
+            self.init()
+            now = self.read_register(10)
+            if now.hex().upper() == target_hex:
+                return True, name
+            log("%s: commit yok (%s)" % (name, now.hex().upper()))
+        self.init()
+        return False, None
+
     def program_cid_idle(self, cid_bytes, target_hex):
         """Idle CMD26 varyantlarini dener, her seferinde okuma ile dogrular.
         Donus: (commit_edildi, varyant_adi)."""
@@ -364,6 +419,19 @@ class SD:
         if r1 != 0x00:
             raise SDError("CMD38 r1=%s" % r1)
         self._wait_busy(60)
+
+
+def crc7(data, mask):
+    """CRC7, MSB-first; mask: 0x09 (x7+x3+1) veya 0x0D (x7+x3+x2+1)."""
+    crc = 0
+    for b in data:
+        for i in range(7, -1, -1):
+            bit = (b >> i) & 1
+            msb = crc >> 6
+            crc = ((crc << 1) & 0x7F) | bit
+            if msb:
+                crc ^= mask
+    return crc
 
 
 def crc16(data):

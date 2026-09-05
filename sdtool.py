@@ -148,6 +148,8 @@ def main():
     wi.add_argument("--start", type=int, default=0)
     wi.add_argument("--verify", action="store_true", help="yazilan bloklari geri okuyup karsilastir")
     sub.add_parser("csdtest", help="CSD yazma commit testi (TMP_WRITE_PROTECT bitini yaz/geri al)")
+    ch = sub.add_parser("cidhunt", help="CID commit yontem arayisi (CRC-on + komut varyant matrisi)")
+    ch.add_argument("hex")
 
     args = p.parse_args()
 
@@ -424,6 +426,17 @@ def main():
             else:
                 print("CSD commit YOK (okunan: %s)" % now.hex().upper())
                 print("SONUC: CSD yazma da sessizce diskarde ediliyor.")
+        elif args.cmd == "cidhunt":
+            data = hex_bytes(args.hex)
+            if len(data) != 16:
+                print("HATA: CID 16 bayt olmali.")
+                sys.exit(1)
+            ok, how = sd.hunt_cid_commit(data, args.hex.upper())
+            if ok:
+                print("COMMIT BASARILI: %s" % how)
+            else:
+                print("Hicbir yontem commit etmedi.")
+            print("Mevcut CID: %s" % sd.cid().hex().upper())
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
