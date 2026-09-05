@@ -106,6 +106,8 @@ def main():
     w.add_argument("file", help="512 bayt iceren dosya")
     wc = sub.add_parser("writecid", help="CID yaz (CMD26)")
     wc.add_argument("hex")
+    wc.add_argument("--idle", action="store_true",
+                    help="idle durumunda yaz (baz kartlar sadece bu durumda kabul eder)")
     ws = sub.add_parser("writecsd", help="CSD yaz (CMD27)")
     ws.add_argument("hex")
     sp = sub.add_parser("setpass", help="sifre belirle (CMD42)")
@@ -206,8 +208,18 @@ def main():
             sd.write_block(args.addr, data)
             print("blok yazildi: %d" % args.addr)
         elif args.cmd == "writecid":
-            sd.write_cid(hex_bytes(args.hex))
-            print("CID yazildi.")
+            data = hex_bytes(args.hex)
+            if len(data) != 16:
+                print("HATA: CID 16 bayt olmali.")
+                sys.exit(1)
+            if args.idle:
+                ok = sd.try_write_cid_idle(data)
+                if not ok:
+                    print("HATA: kart idle durumunda CMD26'yi reddetti.")
+                    sys.exit(1)
+            else:
+                sd.write_cid(data)
+            print("CID yazildi. Yeni CID: %s" % sd.cid().hex().upper())
         elif args.cmd == "writecsd":
             sd.write_csd(hex_bytes(args.hex))
             print("CSD yazildi.")
