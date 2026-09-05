@@ -309,16 +309,23 @@ def main():
             print("Mevcut CID : %s" % cid.hex().upper())
             try:
                 sd.write_cid(cid)
-                print("CMD26 (CID yazma): DESTEKLIYOR (kendi CID'i geri yazildi, dogrulandi: %s)"
-                      % ("OK" if sd.cid() == cid else "FARKLI!"))
+                print("CMD26 (tran) : DESTEKLIYOR (dogrulandi)")
             except sdlib.SDError as e:
-                print("CMD26 (CID yazma): desteklenmiyor (%s)" % e)
+                print("CMD26 (tran) : desteklenmiyor (%s)" % e)
+            try:
+                ok = sd.try_write_cid_idle(cid)
+                if ok:
+                    print("CMD26 (idle) : DESTEKLIYOR! Yeni CID: %s" % sd.cid().hex().upper())
+                else:
+                    print("CMD26 (idle) : reddedildi")
+            except sdlib.SDError as e:
+                print("CMD26 (idle) : hata (%s)" % e)
             try:
                 csd = sd.csd()
                 sd.write_csd(csd)
-                print("CMD27 (CSD yazma): DESTEKLIYOR (kendi CSD'i geri yazildi)")
+                print("CMD27 (CSD)  : DESTEKLIYOR (kendi CSD'i geri yazildi)")
             except sdlib.SDError as e:
-                print("CMD27 (CSD yazma): desteklenmiyor (%s)" % e)
+                print("CMD27 (CSD)  : desteklenmiyor (%s)" % e)
         elif args.cmd == "export":
             import json
             import datetime

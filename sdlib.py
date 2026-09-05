@@ -184,6 +184,23 @@ class SD:
     def write_cid(self, cid_bytes):
         self._write_register(26, cid_bytes, "CID")
 
+    def try_write_cid_idle(self, cid_bytes):
+        """CMD26'yi idle durumda dener (fabrika programlama akisi).
+        Donus: True = kabul edilip yazildi, False = reddedildi."""
+        r1, _, _ = self.cmd(0, 0, 0x95)
+        if r1 != 0x01:
+            raise SDError("CMD0 reset failed r1=%#x" % (r1 or 0))
+        frame = self._send_cmd(26, 0, 0x00)
+        rx = self.spi.xfer2(frame + [0xFF] * 8)
+        r1, _ = self._r1_of(rx, len(frame))
+        # idle biti setli + illegal biti temiz = kabul
+        accepted = r1 is not None and (r1 & 0x01) and not (r1 & 0x04)
+        if accepted:
+            self.spi.xfer2([0xFE] + list(cid_bytes) + [0xFF, 0xFF])
+            self._expect_data_response(26)
+        self.init()
+        return accepted
+
     def write_csd(self, csd_bytes):
         self._write_register(27, csd_bytes, "CSD")
 
