@@ -4,10 +4,18 @@ Tum SD SPI komutlari: CID/CSD/SCR/OCR/RCA okuma, blok okuma/yazma,
 CID/CSD yazma, sifre (CMD42), yazma korumasi (CMD28-30), zorla silme (CMD32/33/38).
 """
 
+import sys
 import time
 import struct
 import collections
 import spidev
+
+DEBUG = False
+
+
+def log(msg):
+    if DEBUG:
+        print("[SD] %s" % msg, file=sys.stderr)
 
 
 class SDError(Exception):
