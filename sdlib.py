@@ -71,13 +71,18 @@ class SD:
         rx = self.spi.xfer2(frame + [0xFF] * pad)
         r1, idx = self._r1_of(rx, len(frame))
         return r1, rx, idx
-
     def init(self):
-        self.clock(20)
-        self.clock(10)
-        r1, _, _ = self.cmd(0, 0, 0x95)
+        time.sleep(0.01)
+        r1 = None
+        for _ in range(10):
+            self.clock(20)
+            self.clock(10)
+            r1, _, _ = self.cmd(0, 0, 0x95)
+            if r1 == 0x01:
+                break
+            time.sleep(0.01)
         if r1 != 0x01:
-            raise SDError("CMD0 failed r1=%#x" % (r1 or 0))
+            raise SDError("CMD0 failed r1=%#x (10 deneme)" % (r1 or 0))
         r1, rx, idx = self.cmd(8, 0x1AA, 0x87)
         if r1 not in (0x01, 0x05):
             raise SDError("CMD8 failed r1=%s" % r1)
