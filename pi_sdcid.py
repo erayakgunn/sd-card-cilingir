@@ -1,5 +1,13 @@
 import sys, time, struct, spidev
 
+DEBUG = False
+
+
+def log(msg):
+    if DEBUG:
+        print("[SD] %s" % msg, file=sys.stderr)
+
+
 class SD:
     def __init__(self, bus=0, dev=0, freq=400_000):
         self.spi = spidev.SpiDev()
@@ -8,61 +16,73 @@ class SD:
         self.spi.mode = 0
         self.bits = 8
 
-    def _tl(self, frame, pad, low_first=False):
-        tx = list(frame) + [0xFF] * pad
-        rx = self.spi.xfer2(tx)
-        return rx
+    def clock(self, n):
+        self.spi.xfer2([0xFF] * n)
 
-    def _send_raw(self, cmd, arg=0, crc=0x00):
+    def _send_cmd(self, cmd, arg=0, crc=0x00):
         arg &= 0xFFFFFFFF
-        return [((cmd & 0x7F) | 0x40), (arg >> 24) & 0xFF, (arg >> 16) & 0xFF,
-                (arg >> 8) & 0xFF, arg & 0xFF, crc & 0xFF]
+        return [((cmd & 0x7F) | 0x40),
+                (arg >> 24) & 0xFF, (arg >> 16) & 0xFF,
+                (arg >> 8) & 0xFF, arg & 0xFF,
+                crc & 0xFF]
 
-    def _r1(self, rx, start=6):
+    def _r1_of(self, rx, start):
         for i in range(start, len(rx)):
             if rx[i] != 0xFF:
                 return rx[i], i
         return None, None
 
-    def clock(self, n):
-        self.spi.xfer2([0xFF] * n)
+    def cmd(self, cmd, arg=0, crc=0x00, pad=10):
+        frame = self._send_cmd(cmd, arg, crc)
+        rx = self.spi.xfer2(frame + [0xFF] * pad)
+        r1, idx = self._r1_of(rx, len(frame))
+        log("CMD%d arg=%#x -> r1=%s" % (cmd, arg, ("%#x" % r1) if r1 is not None else None))
+        return r1, rx, idx
 
     def init(self):
         self.clock(20)
-        self.spi.xfer2([0xFF] * 12)
-        r1, _ = self.acmd(0, 0, crc=0x95, idle=0x01)
+        self.clock(10)
+
+        r1, _, _ = self.cmd(0, 0, 0x95)
         if r1 != 0x01:
             raise RuntimeError("CMD0 failed r1=%#x" % (r1 or 0))
-        rx = self._tl(self._send_raw(8, 0x1AA, 0x87), 6)
-        r1, idx = self._r1(rx)
-        if r1 is None or r1 not in (0x01, 0x05):
+
+        r1, rx, idx = self.cmd(8, 0x1AA, 0x87)
+        if r1 not in (0x01, 0x05):
             raise RuntimeError("CMD8 failed r1=%s" % r1)
         echo = bytes(rx[idx + 1:idx + 5])
         if len(echo) < 4 or echo[2] != 0x01 or echo[3] != 0xAA:
             raise RuntimeError("CMD8 echo not 1AA: %s" % echo.hex())
-        self.spi.max_speed_hz = 800_000
-        for _ in range(100):
-            rx = self._tl(self._send_raw(55), 6)
-            _, _ = self._r1(rx)
-            rx = self._tl(self._send_raw(41, 0x40000000), 4)
-            r41, _ = self._r1(rx, 6)
+        log("CMD8 echo OK")
+
+        self.spi.max_speed_hz = 400_000
+
+        ready = False
+        for _ in range(1000):
+            r55, _, _ = self.cmd(55, 0, 0x00)
+            if r55 is None:
+                time.sleep(0.005)
+                continue
+            r41, _, _ = self.cmd(41, 0x40000000)
             if r41 == 0x00:
-                return True
+                ready = True
+                break
             if r41 != 0x01:
                 raise RuntimeError("ACMD41 failed r1=%#x" % (r41 or 0))
             time.sleep(0.01)
-        raise RuntimeError("card init timeout")
+        if not ready:
+            raise RuntimeError("card init timeout")
 
-    def acmd(self, cmd, arg=0, crc=0x00, idle=None):
-        rx = self._tl(self._send_raw(cmd, arg, crc), 6)
-        r, _ = self._r1(rx)
-        return r, rx
+        r1, rx, idx = self.cmd(58, 0, 0x00)
+        if r1 == 0x00:
+            self.ocr = bytes(rx[idx + 1:idx + 5])
+            log("OCR: %s" % self.ocr.hex().upper())
+        return True
 
     def read_register(self, cmd):
-        self.spi.xfer2([0xFF] * 2)
-        frame = self._send_raw(cmd, 0, 0x00)
-        rx = self._tl(frame, 44)
-        r1, idx = self._r1(rx, 6)
+        frame = self._send_cmd(cmd, 0, 0x00)
+        rx = self.spi.xfer2(frame + [0xFF] * 64)
+        r1, idx = self._r1_of(rx, len(frame))
         if r1 is None or r1 != 0x00:
             raise RuntimeError("CMD%d r1=%s" % (cmd, r1))
         i = idx + 1
@@ -101,8 +121,13 @@ def decode_cid(cid):
 
 
 def main():
-    bus = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    dev = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    global DEBUG
+    args = sys.argv[1:]
+    if "--debug" in args:
+        DEBUG = True
+        args = [a for a in args if a != "--debug"]
+    bus = int(args[0]) if len(args) > 0 else 0
+    dev = int(args[1]) if len(args) > 1 else 0
     sd = SD(bus, dev)
     try:
         sd.init()
