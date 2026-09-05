@@ -415,8 +415,9 @@ def main():
                 print("CMD27 yazma hatasi: %s" % e)
                 sys.exit(1)
             now = sd.csd()
-            if bytes(now) == bytes(mod):
-                print("CSD commit EDI (TMP_WRITE_PROTECT=1 okundu). Geri aliniyor...")
+            # byte15 CRC'dir, kart kendisi yeniden hesaplar — karsilastirma disi
+            if bytes(now[:15]) == bytes(mod[:15]):
+                print("CSD commit EDI (byte14=%02X okundu). Geri aliniyor..." % now[14])
                 sd.write_csd(csd)
                 print("geri alindi: %s" % sd.csd().hex().upper())
                 print("SONUC: CSD yazma CALISIYOR.")
