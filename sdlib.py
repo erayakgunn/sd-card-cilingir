@@ -241,7 +241,9 @@ class SD:
         Donus: (commit_edildi, varyant_adi)."""
         c = crc16(cid_bytes)
         blk_crc = [(c >> 8) & 0xFF, c & 0xFF]
-        variants = ["prompt", "token"]
+        blk512 = bytes(cid_bytes) + b"\x00" * 496
+        c512 = crc16(blk512)
+        variants = ["token512", "prompt", "token"]
         for v in variants:
             r1, _, _ = self.cmd(0, 0, 0x95)
             if r1 != 0x01:
@@ -252,7 +254,11 @@ class SD:
             if r1 is None or not (r1 & 0x01) or (r1 & 0x04):
                 log("CMD26 (%s) durumda reddedildi r1=%s" % (v, r1))
                 continue
-            if v == "prompt":
+            if v == "token512":
+                self.spi.xfer2([0xFE] + list(blk512) + [(c512 >> 8) & 0xFF, c512 & 0xFF])
+                rxx = self.spi.xfer2([0xFF] * 32)
+                log("token512-veri sonrasi: %s" % bytes(rxx[:16]).hex())
+            elif v == "prompt":
                 rxp = self.spi.xfer2([0xFF] * 32)
                 log("prompt aramasi: %s" % bytes(rxp).hex())
                 if 0xFE not in rxp:

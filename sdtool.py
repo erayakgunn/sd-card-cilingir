@@ -147,6 +147,7 @@ def main():
     wi.add_argument("imgfile")
     wi.add_argument("--start", type=int, default=0)
     wi.add_argument("--verify", action="store_true", help="yazilan bloklari geri okuyup karsilastir")
+    sub.add_parser("csdtest", help="CSD yazma commit testi (TMP_WRITE_PROTECT bitini yaz/geri al)")
 
     args = p.parse_args()
 
@@ -328,11 +329,17 @@ def main():
             except sdlib.SDError as e:
                 print("CMD26 (tran) : desteklenmiyor (%s)" % e)
             try:
-                ok = sd.try_write_cid_idle(cid)
+                mod = bytearray(cid)
+                psn = int.from_bytes(mod[9:13], "big")
+                mod[9:13] = ((psn + 1) & 0xFFFFFFFF).to_bytes(4, "big")
+                ok, variant = sd.program_cid_idle(bytes(mod), bytes(mod).hex().upper())
                 if ok:
-                    print("CMD26 (idle) : DESTEKLIYOR! Yeni CID: %s" % sd.cid().hex().upper())
+                    print("CMD26 (idle) : COMMIT EDIYOR! (varyant: %s)" % variant)
+                    ok2, v2 = sd.program_cid_idle(cid, cid.hex().upper())
+                    print("  -> orijinal CID geri yazildi: %s (mevcut: %s)"
+                          % ("OK" if ok2 else "MANUEL GEREKLI", sd.cid().hex().upper()))
                 else:
-                    print("CMD26 (idle) : reddedildi")
+                    print("CMD26 (idle) : kabul ediyor ama COMMIT ETMIYOR (sahte kabul)")
             except sdlib.SDError as e:
                 print("CMD26 (idle) : hata (%s)" % e)
                 try:
@@ -398,6 +405,24 @@ def main():
                                          % (done, total, pct, (done * 512 / 1024) / el, eta))
                         sys.stdout.flush()
             print("\nWRITE OK: %d blok, %.1f dk" % (done, (_t.time() - t0) / 60))
+        elif args.cmd == "csdtest":
+            csd = sd.csd()
+            mod = bytearray(csd)
+            mod[14] |= 0x10  # TMP_WRITE_PROTECT = 1 (gecici, geri alinabilir)
+            try:
+                sd.write_csd(bytes(mod))
+            except sdlib.SDError as e:
+                print("CMD27 yazma hatasi: %s" % e)
+                sys.exit(1)
+            now = sd.csd()
+            if bytes(now) == bytes(mod):
+                print("CSD commit EDI (TMP_WRITE_PROTECT=1 okundu). Geri aliniyor...")
+                sd.write_csd(csd)
+                print("geri alindi: %s" % sd.csd().hex().upper())
+                print("SONUC: CSD yazma CALISIYOR.")
+            else:
+                print("CSD commit YOK (okunan: %s)" % now.hex().upper())
+                print("SONUC: CSD yazma da sessizce diskarde ediliyor.")
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
