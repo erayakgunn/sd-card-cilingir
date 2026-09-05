@@ -203,14 +203,16 @@ class SD:
         resp = None
         for b in rx:
             if b != 0xFF:
-                resp = b & 0x0F
+                resp = b & 0x1F
                 break
-        if resp != 0x00:
+        # 0x05 = kabul, 0x0B = CRC hatasi, 0x0D = yazma hatasi
+        if resp != 0x05:
             raise SDError("CMD%d data error %#x" % (cmd, resp if resp is not None else 0xFF))
         self._wait_busy()
 
-    def _wait_busy(self):
-        for _ in range(20):
+    def _wait_busy(self, timeout=2.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
             rx = self.spi.xfer2([0xFF])
             if rx[0] == 0xFF:
                 return
@@ -262,7 +264,7 @@ class SD:
         r1, _, _ = self.cmd(38, 0, 0)
         if r1 != 0x00:
             raise SDError("CMD38 r1=%s" % r1)
-        self._wait_busy()
+        self._wait_busy(60)
 
 
 def decode_cid(cid):
