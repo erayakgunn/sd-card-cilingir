@@ -6,6 +6,7 @@ CID/CSD yazma, sifre (CMD42), yazma korumasi (CMD28-30), zorla silme (CMD32/33/3
 
 import time
 import struct
+import collections
 import spidev
 
 
@@ -13,14 +14,38 @@ class SDError(Exception):
     pass
 
 
+class SDBackend:
+    """fatdump.FatReader icin SPI blok okuma arayuzu (LRU cache'li)."""
+
+    def __init__(self, sd, cache_size=128):
+        self.sd = sd
+        self.cache = collections.OrderedDict()
+        self.cache_size = cache_size
+
+    def read_sectors(self, lba, count):
+        return b"".join(self._one(lba + i) for i in range(count))
+
+    def _one(self, lba):
+        if lba in self.cache:
+            self.cache.move_to_end(lba)
+            return self.cache[lba]
+        data = self.sd.read_block(lba)
+        self.cache[lba] = data
+        while len(self.cache) > self.cache_size:
+            self.cache.popitem(last=False)
+        return data
+
+
 class SD:
     def __init__(self, bus=0, dev=0, freq=400_000):
         self.spi = spidev.SpiDev()
         self.spi.open(bus, dev)
+        self.freq = freq
         self.spi.max_speed_hz = freq
         self.spi.mode = 0
         self.bits = 8
         self.ocr = None
+        self.ccs = 0
 
     def close(self):
         self.spi.close()
@@ -83,6 +108,8 @@ class SD:
         if not self.ccs:
             # SDSC: blok uzunlugunu 512'ye sabitle
             self.cmd(16, 512, 0)
+        # init tamamlandi; kullanici istedigi hiza cik (varsayilan 400 kHz)
+        self.spi.max_speed_hz = max(400_000, self.freq)
         return True
 
     def _addr(self, sector):

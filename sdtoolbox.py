@@ -1,5 +1,6 @@
 """sdtoolbox: SDToolBox benzeri tkinter GUI (Pi + SPI)."""
 
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext
 import sdlib
@@ -20,6 +21,9 @@ class App:
         self.dev_var = tk.StringVar(value="0")
         ttk.Entry(top, textvariable=self.bus_var, width=5).pack(side="left", padx=2)
         ttk.Entry(top, textvariable=self.dev_var, width=5).pack(side="left", padx=2)
+        ttk.Label(top, text="Hız (Hz):").pack(side="left", padx=(8, 0))
+        self.freq_var = tk.StringVar(value="400000")
+        ttk.Entry(top, textvariable=self.freq_var, width=9).pack(side="left", padx=2)
         self.b_conn = ttk.Button(top, text="Bağlan", command=self.connect)
         self.b_conn.pack(side="left", padx=6)
         self.conn_lbl = ttk.Label(top, text="Bağlı değil", foreground="red")
@@ -90,6 +94,8 @@ class App:
         self.out_var = tk.StringVar()
         ttk.Entry(top, textvariable=self.out_var, width=30).pack(side="left", padx=4)
         ttk.Button(top, text="Çıkar", command=self.extract_files).pack(side="left")
+        ttk.Button(top, text="Karttan Listele", command=self.list_card_files).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Karttan Çıkar", command=self.extract_card_files).pack(side="left")
         self.fat_log = scrolledtext.ScrolledText(f, state="disabled", wrap="word",
                                                  font=("Consolas", 9), height=20)
         self.fat_log.pack(fill="both", expand=True, padx=8, pady=4)
@@ -109,13 +115,14 @@ class App:
     def connect(self):
         bus = int(self.bus_var.get())
         dev = int(self.dev_var.get())
+        freq = int(self.freq_var.get())
         try:
             if self.sd:
                 self.sd.close()
-            self.sd = sdlib.SD(bus, dev)
+            self.sd = sdlib.SD(bus, dev, freq)
             self.sd.init()
-            self.conn_lbl.config(text="Bağlı (bus %d dev %d)" % (bus, dev), foreground="green")
-            self._log("Kart bağlandı: bus=%d dev=%d" % (bus, dev))
+            self.conn_lbl.config(text="Bağlı (bus %d dev %d @ %d Hz)" % (bus, dev, freq), foreground="green")
+            self._log("Kart bağlandı: bus=%d dev=%d freq=%d" % (bus, dev, freq))
             self.refresh_info()
         except Exception as e:
             self.sd = None
@@ -242,6 +249,51 @@ class App:
         p = filedialog.askopenfilename(filetypes=[("Image", "*.img"), ("All", "*.*")])
         if p:
             self.img_var.set(p)
+
+    def _card_fat_reader(self):
+        be = sdlib.SDBackend(self.sd)
+        cap = sdlib.decode_csd(self.sd.csd())["capacity"]
+        return fatdump.FatReader(backend=be, total_size=cap)
+
+    def list_card_files(self):
+        if not self.sd:
+            self._fat_log("Önce Bağlan.")
+            return
+        try:
+            r = self._card_fat_reader()
+            self._fat_log("# kart uzerinden FAT (SPI)")
+            for full, ent in r.walk():
+                t = "DIR " if ent["isdir"] else "FILE"
+                self._fat_log("%s  %s  %9d  %s" % (t, full, ent["size"], ent["mtime"]))
+        except Exception as e:
+            self._fat_log("HATA: %s" % e)
+
+    def extract_card_files(self):
+        if not self.sd:
+            self._fat_log("Önce Bağlan.")
+            return
+        out = self.out_var.get()
+        if not out:
+            self._fat_log("Çıkarma klasörü gir.")
+            return
+        try:
+            r = self._card_fat_reader()
+            entries = r.walk()
+            total = 0
+            for full, ent in entries:
+                if ent["isdir"]:
+                    os.makedirs(os.path.join(out, full), exist_ok=True)
+                else:
+                    dest = os.path.join(out, full)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    data = r.read_file(ent["cluster"], ent["size"])
+                    with open(dest, "wb") as f:
+                        f.write(data)
+                    total += len(data)
+            nfiles = sum(1 for _, e in entries if not e["isdir"])
+            self._fat_log("Karttan çıkarıldı: %d dosya, %d bayt -> %s" % (nfiles, total, out))
+        except Exception as e:
+            self._fat_log("HATA: %s" % e)
 
     def list_files(self):
         img = self.img_var.get()

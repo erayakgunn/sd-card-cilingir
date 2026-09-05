@@ -56,14 +56,20 @@ def decode_time(date_raw, time_raw):
 
 
 class FatReader:
-    def __init__(self, path):
-        with open(path, "rb") as f:
-            self.data = f.read()
-        self.raw = self.data
+    def __init__(self, path=None, backend=None, total_size=0):
+        self.backend = backend
+        if backend is None:
+            with open(path, "rb") as f:
+                self.data = f.read()
+            self.raw = self.data
+        else:
+            self.total_size = total_size
         self.bps = 512
         self._init_geometry()
 
     def rsect(self, sector, count=1):
+        if self.backend is not None:
+            return self.backend.read_sectors(sector, count)
         off = sector * self.bps
         end = off + count * self.bps
         return self.raw[off:end]
@@ -116,20 +122,24 @@ class FatReader:
     def truncate_label(self, entry_attr, entry_name):
         return None
 
+    def _fat_read(self, off, n):
+        sec = self.fat_start + off // self.bps
+        k = off % self.bps
+        if k + n <= self.bps:
+            return self.rsect(sec)[k:k + n]
+        return self.rsect(sec, 2)[k:k + n]
+
     def get_fat(self, cluster):
         if self.type == 12:
-            off = cluster + cluster // 2
-            b = self.raw[self.fat_start * self.bps + off:self.fat_start * self.bps + off + 2]
+            b = self._fat_read(cluster + cluster // 2, 2)
             v = struct.unpack("<H", b.ljust(2, b"\x00"))[0]
             if cluster & 1:
                 return v >> 4
             return v & 0xFFF
         elif self.type == 16:
-            off = cluster * 2
-            return struct.unpack_from("<H", self.raw, self.fat_start * self.bps + off)[0]
+            return struct.unpack("<H", self._fat_read(cluster * 2, 2))[0]
         else:
-            off = cluster * 4
-            return struct.unpack_from("<I", self.raw, self.fat_start * self.bps + off)[0] & 0x0FFFFFFF
+            return struct.unpack("<I", self._fat_read(cluster * 4, 4))[0] & 0x0FFFFFFF
 
     def cluster_to_sector(self, cluster):
         return self.data_start + (cluster - 2) * self.spc
@@ -157,10 +167,9 @@ class FatReader:
 
     def _iter_dir(self, first_cluster, is_root):
         if is_root and self.type != 32:
-            data = self.raw[self.rootdir_start * self.bps:self.rootdir_start * self.bps + self.rootdir_len]
-        else:
-            data = self.read_clusters(first_cluster)
-        return data
+            nsec = (self.rootdir_len + self.bps - 1) // self.bps
+            return b"".join(self.rsect(self.rootdir_start + i) for i in range(nsec))
+        return self.read_clusters(first_cluster)
 
     def walk(self):
         root_clusters = self.root_cluster if self.type == 32 else 0

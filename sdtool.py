@@ -92,6 +92,8 @@ def main():
     p = argparse.ArgumentParser(prog="sdtool", description="SD kart kontrol araci (Pi + SPI).")
     p.add_argument("--bus", type=int, default=0)
     p.add_argument("--dev", type=int, default=0)
+    p.add_argument("--freq", type=int, default=400_000,
+                   help="SPI hizi (Hz), init sonrasi uygulanir (orn. 4000000)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("info", help="CID/CSD/SCR/RCA/OCR oku")
@@ -125,10 +127,16 @@ def main():
     hd = sub.add_parser("hexdump", help="bloklari okunabilir goster")
     hd.add_argument("addr", type=int)
     hd.add_argument("--count", type=int, default=1)
+    sub.add_parser("ls", help="kart dosyalarini listele (SPI uzerinden)")
+    ex = sub.add_parser("extract", help="kart dosyalarini klasore cikar (SPI uzerinden)")
+    ex.add_argument("outdir")
+    spd = sub.add_parser("speed", help="okuma hizi testi")
+    spd.add_argument("--start", type=int, default=235)
+    spd.add_argument("--count", type=int, default=256)
 
     args = p.parse_args()
 
-    sd = sdlib.SD(args.bus, args.dev)
+    sd = sdlib.SD(args.bus, args.dev, args.freq)
     try:
         sd.init()
     except sdlib.SDError as e:
@@ -220,6 +228,42 @@ def main():
         elif args.cmd == "hexdump":
             for i in range(args.count):
                 hexdump(sd.read_block(args.addr + i), base=(args.addr + i) * 512)
+        elif args.cmd == "ls":
+            import fatdump
+            be = sdlib.SDBackend(sd)
+            cap = sdlib.decode_csd(sd.csd())["capacity"]
+            r = fatdump.FatReader(backend=be, total_size=cap)
+            for full, ent in r.walk():
+                t = "DIR " if ent["isdir"] else "FILE"
+                print("%s  %s  %9d  %s" % (t, full, ent["size"], ent["mtime"]))
+        elif args.cmd == "extract":
+            import os
+            import fatdump
+            be = sdlib.SDBackend(sd)
+            cap = sdlib.decode_csd(sd.csd())["capacity"]
+            r = fatdump.FatReader(backend=be, total_size=cap)
+            entries = r.walk()
+            total = 0
+            for full, ent in entries:
+                if ent["isdir"]:
+                    os.makedirs(os.path.join(args.outdir, full), exist_ok=True)
+                else:
+                    dest = os.path.join(args.outdir, full)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    data = r.read_file(ent["cluster"], ent["size"])
+                    with open(dest, "wb") as f:
+                        f.write(data)
+                    total += len(data)
+            nfiles = sum(1 for _, e in entries if not e["isdir"])
+            print("cikarildi: %d dosya, %d bayt -> %s" % (nfiles, total, args.outdir))
+        elif args.cmd == "speed":
+            import time as _t
+            t0 = _t.time()
+            for i in range(args.count):
+                sd.read_block(args.start + i)
+            dt = _t.time() - t0
+            kb = args.count * 512 / 1024
+            print("%d blok / %.2f sn = %.0f KB/s (%.2f MB/s)" % (args.count, dt, kb / dt, kb / 1024 / dt))
         else:
             print("bilinmeyen komut")
     except sdlib.SDError as e:
