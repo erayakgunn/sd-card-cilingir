@@ -5,7 +5,9 @@ Onemli: testten once karti cikar-tak (guç döngüsü) — mod, güç aninda sec
 
 Kullanim:
   python3 sdbit.py probe --debug        # init + fabrika CID oku (CMD2)
-  python3 sdbit.py program <hex16>      # CMD26 ile CID yaz + geri oku
+  python3 sdbit.py program <hex16> [--fix-crc] [auto|samsung1|samsung2|direct]
+                                           # vendor unlock -> CMD26 -> reset -> readback
+  python3 sdbit.py restore [hex16] [--fix-crc] # kaynak CID'i geri yukle (varsayilan: SOURCE_CID)
 """
 
 import sys
@@ -17,6 +19,10 @@ from gpiod.line import Bias, Direction, Value
 CLK, CMD, DAT0, DAT3 = 11, 10, 9, 8  # BCM (Pi header)
 
 BIT_NS = 3000  # ~300 kHz hedef (sys overhead ile ~50-100 kHz)
+
+# Original card CID supplied for this project.  Used by `restore` as a
+# convenience default; it is never silently written without verification.
+SOURCE_CID = bytes.fromhex("5D53424C31424E31061D0E354501571D")
 
 
 def find_chip():
@@ -291,54 +297,183 @@ class SDCard:
         raw = self.bus.bits_to_bytes(bits)
         return raw[1:17] if len(raw) >= 17 else raw
 
-    def program_cid(self, cid):
+    def _r1(self, cmd, arg=0, label=None):
+        bits = self.cmd(cmd, arg, total_bits=48)
+        raw = self.bus.bits_to_bytes(bits) if bits else None
+        if label:
+            log("%s: %s" % (label, raw.hex() if raw else "yok"), self.debug)
+        return raw
+
+    def _cmd62(self, arg, label=None):
+        # CMD62 is reserved by the SD specification.  These values are
+        # documented for some Samsung controllers; they are NOT claimed to
+        # be a Swissbit command.  Keep every candidate visible in --debug.
+        return self._r1(62, arg, label or ("CMD62 %#010x" % arg))
+
+    def _cid_crc_ok(self, cid):
+        if len(cid) != 16:
+            return False
+        # CID CRC7 covers the first 15 CID bytes.  The final CID byte is
+        # CRC7[6:0] << 1 | 1.
+        got = cid[15]
+        calc = crc7_sd(cid[:15])
+        return got == ((calc << 1) | 1)
+
+    def _cid_with_valid_crc(self, cid):
+        cid = bytes(cid)
+        if len(cid) != 16:
+            raise ValueError("CID 16 bayt olmali")
+        calc = crc7_sd(cid[:15])
+        return cid[:15] + bytes([(calc << 1) | 1])
+
+    def _send_cid_data(self, cid):
+        """Send the 16-byte CID data packet used by the existing CMD26 path."""
         b = self.bus
-        # SD-bus'ta CMD26, CMD2 ile identification state'e gecildikten sonra kullanilir.
-        old_cid = self.read_cid()
-        log("CMD2 onceki CID ham: %s" % (old_cid.hex() if old_cid else "yok"), self.debug)
-        # Bazi kartlar CMD26'yi ancak RCA atanip kart secildikten sonra kabul eder.
-        rca = None
-        r6 = self.cmd(3, 0, total_bits=48)
-        r6b = self.bus.bits_to_bytes(r6) if r6 else None
-        log("CMD3/R6: %s" % (r6b.hex() if r6b else "yok"), self.debug)
-        if r6b and len(r6b) >= 3:
-            rca = (r6b[1] << 8) | r6b[2]
-            r7 = self.cmd(7, rca << 16, total_bits=48)
-            r7b = self.bus.bits_to_bytes(r7) if r7 else None
-            log("CMD7/R1: %s (RCA=%04X)" % (r7b.hex() if r7b else "yok", rca), self.debug)
-        bits = self.cmd(26, 0, total_bits=48)
-        r1 = self.bus.bits_to_bytes(bits) if bits else None
-        log("CMD26 resp: %s" % (r1.hex() if r1 else "yok"), self.debug)
-        # veri: DAT0 uzerinden host surer
         b.d0_reconf(True)
         c16 = crc16_sd(cid)
-        tok_bits = []
-        tok = 0xFE
-        for i in range(7, -1, -1):
-            tok_bits.append((tok >> i) & 1)
-        for byte in list(cid) + [(c16 >> 8) & 0xFF, c16 & 0xFF]:
+        bits = []
+        for byte in bytes([0xFE]) + bytes(cid) + bytes([(c16 >> 8) & 0xFF, c16 & 0xFF]):
             for i in range(7, -1, -1):
-                tok_bits.append((byte >> i) & 1)
-        for v in tok_bits:
+                bits.append((byte >> i) & 1)
+        for v in bits:
             b.tx_bit(1, v)
-        b.tx_bit(1, 1)  # end bit
+        b.tx_bit(1, 1)
         b.d0_reconf(False)
-        # data response + busy: DAT0'u ornekleyerek clockla
-        dr_bits = []
-        for _ in range(16):
-            dr_bits.append(b.rx_bit_d0())
+
+        dr_bits = [b.rx_bit_d0() for _ in range(16)]
         log("data-response bitleri: %s" % "".join(map(str, dr_bits)), self.debug)
-        # busy: DAT0 low -> high bekle
+        # SD data response is xxx010status.  010 = accepted, 101 = CRC
+        # error, 110 = write error.  With bit-bang timing we retain the raw
+        # bits and explicitly classify the common patterns.
+        dr = "".join(map(str, dr_bits))
+        accepted = any(dr[i:i+3] == "010" for i in range(max(0, len(dr)-2)))
+        crc_error = any(dr[i:i+3] == "101" for i in range(max(0, len(dr)-2)))
+        write_error = any(dr[i:i+3] == "110" for i in range(max(0, len(dr)-2)))
+        log("data-response classify: accepted=%s crc_error=%s write_error=%s" %
+            (accepted, crc_error, write_error), self.debug)
+
         t0 = time.time()
         busy_seen = False
-        while time.time() - t0 < 2.0:
+        while time.time() - t0 < 3.0:
             v = b.rx_bit_d0()
             if v == 0:
                 busy_seen = True
             elif busy_seen:
                 break
+        if time.time() - t0 >= 3.0:
+            raise RuntimeError("PROGRAM_TIMEOUT: DAT0 busy 3s+ (accepted=%s)" % accepted)
         log("busy bitti (busy_seen=%s)" % busy_seen, self.debug)
-        return rca
+        return accepted, dr
+
+    def _cmd26(self, cid, label="CMD26"):
+        bits = self.cmd(26, 0, total_bits=48)
+        r1 = self.bus.bits_to_bytes(bits) if bits else None
+        log("%s resp: %s" % (label, r1.hex() if r1 else "yok"), self.debug)
+        if not r1:
+            raise RuntimeError("CMD26_NO_RESPONSE")
+        # For an R1 response, bit 2 is ILLEGAL_COMMAND and bit 3 is CRC_ERROR.
+        status = r1[-1]
+        if status & 0x04:
+            raise RuntimeError("CMD26_ILLEGAL_COMMAND (R1=%02X)" % status)
+        accepted, dr = self._send_cid_data(cid)
+        if not accepted:
+            raise RuntimeError("DATA_REJECTED (response=%s)" % dr)
+        return r1
+
+    def _vendor_candidate_1(self):
+        """Samsung-documented CMD62 candidate: EFAC62EC -> 00CCED82."""
+        self._cmd62(0xEFAC62EC, "vendor #1 unlock A")
+        self._cmd62(0x00CCED82, "vendor #1 unlock B")
+        self._r1(16, 16, "CMD16/16-byte")
+
+    def _vendor_candidate_2(self):
+        """Older Samsung/Arduino candidate: EFAC62EC -> EF50 -> CMD17."""
+        self._cmd62(0xEFAC62EC, "vendor #2 unlock A")
+        self._cmd62(0x0000EF50, "vendor #2 unlock B")
+        # CMD17 is part of the published candidate sequence.  We deliberately
+        # only issue the command and clock a short observation window; reading
+        # an arbitrary 512-byte block here would risk desynchronising the
+        # single-wire bit-bang state if the controller actually accepts it.
+        r = self._r1(17, 0, "CMD17/probe")
+        if r is None:
+            log("CMD17/probe: no R1; continuing to CMD26 candidate", self.debug)
+
+    def _vendor_exit(self):
+        try:
+            self._cmd62(0x00DECCEE, "vendor exit")
+        except Exception as e:
+            log("vendor exit hata: %s" % e, self.debug)
+
+    def _reset_to_identification(self):
+        """Reset the card and run initialization again for a real readback."""
+        self.bus.d0_reconf(True)
+        self.bus.clocks_idle(16)
+        self.cmd(0, 0, crc=0x4A, expect=False)
+        self.bus.clocks_idle(80)
+        self.init()
+
+    def program_cid(self, cid, candidate="auto"):
+        cid = bytes(cid)
+        if len(cid) != 16:
+            raise ValueError("CID 16 bayt olmali")
+
+        old_cid = self.read_cid()
+        if old_cid is None:
+            raise RuntimeError("ORIGINAL_CID_READ_FAILED")
+        print("ORIGINAL CID: %s" % old_cid.hex().upper())
+        log("CMD2 onceki CID ham: %s" % old_cid.hex(), self.debug)
+
+        # A CID is 128 bits, with the last byte containing CRC7 + end bit.
+        # The CID supplied in the original project has 00 as its final byte,
+        # which is not a valid CID CRC byte.  Fail closed unless --fix-crc is
+        # requested by main(); callers pass the already-normalised value here.
+        if not self._cid_crc_ok(cid):
+            raise ValueError("TARGET_CID_CRC_INVALID: son byte=%02X beklenen=%02X" %
+                             (cid[15], self._cid_with_valid_crc(cid)[15]))
+
+        # CMD3 -> RCA, then CMD7 -> selected state.  Keep this before every
+        # vendor candidate because controllers differ in which state they
+        # expect for reserved commands.
+        r6b = self._r1(3, 0, "CMD3/R6")
+        rca = None
+        if r6b and len(r6b) >= 3:
+            rca = (r6b[1] << 8) | r6b[2]
+            self._r1(7, rca << 16, "CMD7/R1 (RCA=%04X)" % rca)
+
+        candidates = []
+        if candidate in ("auto", "samsung1"):
+            candidates.append(("samsung1", self._vendor_candidate_1))
+        if candidate in ("auto", "samsung2"):
+            candidates.append(("samsung2", self._vendor_candidate_2))
+        if candidate == "direct":
+            candidates.append(("direct", lambda: None))
+
+        failures = []
+        for name, unlock in candidates:
+            print("TRY %s: vendor unlock -> CMD26" % name)
+            try:
+                # Re-enter a clean selected state between destructive
+                # candidates.  If the controller latched the previous
+                # candidate, CMD0/init is the safest recovery we have.
+                if name != candidates[0][0]:
+                    self._reset_to_identification()
+                    r6b = self._r1(3, 0, "CMD3/R6 retry")
+                    if r6b and len(r6b) >= 3:
+                        rca = (r6b[1] << 8) | r6b[2]
+                        self._r1(7, rca << 16, "CMD7/R1 retry (RCA=%04X)" % rca)
+                unlock()
+                self._cmd26(cid, "%s CMD26" % name)
+                self._vendor_exit()
+                print("PROGRAM COMMAND ACCEPTED: %s" % name)
+                return rca, old_cid
+            except Exception as e:
+                msg = "%s: %s" % (name, e)
+                failures.append(msg)
+                print("FAIL: %s" % msg)
+                log(msg, True)
+                self._vendor_exit()
+
+        raise RuntimeError("ALL_CID_PROGRAM_METHODS_FAILED: " + " | ".join(failures))
 
 
 def main():
@@ -371,14 +506,37 @@ def main():
         if not args or args[0] == "probe":
             raw = sd.read_cid()
             print("R2 (136 bit, ham): %s" % (raw.hex().upper() if raw else "YOK"))
-        elif args[0] == "program" and len(args) > 1:
-            target = bytes.fromhex(args[1])
-            if len(target) != 16:
+        elif args and args[0] in ("program", "restore") and (len(args) > 1 or args[0] == "restore"):
+            requested = SOURCE_CID if args[0] == "restore" and len(args) == 1 else bytes.fromhex(args[1])
+            if len(requested) != 16:
                 print("CID 16 bayt olmali")
                 return
-            rca = sd.program_cid(target)
-            raw = sd.read_cid_selected(rca) if rca is not None else sd.read_cid()
-            print("readback (ham): %s" % (raw.hex().upper() if raw else "YOK"))
+            target = requested
+            if not sd._cid_crc_ok(target):
+                fixed = sd._cid_with_valid_crc(target)
+                print("[!] Hedef CID CRC7 gecersiz.")
+                print("    verilen : %s" % target.hex().upper())
+                print("    duzeltilmis: %s" % fixed.hex().upper())
+                if "--fix-crc" not in args:
+                    print("ABORT: --fix-crc olmadan yazma yapilmadi.")
+                    return
+                target = fixed
+            candidate = "auto"
+            for a in args[2:]:
+                if a in ("auto", "samsung1", "samsung2", "direct"):
+                    candidate = a
+            print("TARGET CID: %s" % target.hex().upper())
+            if args[0] == "restore":
+                print("Restore explicit CID: kaynak CID'i arguman olarak verildi.")
+            rca, old_cid = sd.program_cid(target, candidate=candidate)
+            print("[!] Program sonrasi kart resetleniyor ve CID tekrar okunuyor...")
+            sd._reset_to_identification()
+            raw = sd.read_cid()
+            print("READBACK CID: %s" % (raw.hex().upper() if raw else "YOK"))
+            if raw != target:
+                raise RuntimeError("READBACK_MISMATCH: expected=%s got=%s" %
+                                   (target.hex().upper(), raw.hex().upper() if raw else "YOK"))
+            print("CID VERIFY OK")
         elif args[0] == "readtest":
             # CMD ve DAT0 okuma yolu testi: 10 sn boyunca seviyeleri goster.
             # MOSI pinini bir jumper ile GND'ye dokunursan CMD=0 gormeliyiz.
