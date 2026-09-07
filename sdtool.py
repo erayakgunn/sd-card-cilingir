@@ -150,6 +150,8 @@ def main():
     sub.add_parser("csdtest", help="CSD yazma commit testi (TMP_WRITE_PROTECT bitini yaz/geri al)")
     ch = sub.add_parser("cidhunt", help="CID commit yontem arayisi (CRC-on + komut varyant matrisi)")
     ch.add_argument("hex")
+    vb = sub.add_parser("vendorcid", help="Samsung/Evo CMD62 backdoor + CMD26 denemesi")
+    vb.add_argument("hex")
 
     args = p.parse_args()
 
@@ -436,6 +438,14 @@ def main():
                 print("COMMIT BASARILI: %s" % how)
             else:
                 print("Hicbir yontem commit etmedi.")
+            print("Mevcut CID: %s" % sd.cid().hex().upper())
+        elif args.cmd == "vendorcid":
+            data = hex_bytes(args.hex)
+            if len(data) != 16:
+                print("HATA: CID 16 bayt olmali.")
+                sys.exit(1)
+            sd.samsung_backdoor_cid(data)
+            print("Vendor backdoor/CMD26 tamamlandi.")
             print("Mevcut CID: %s" % sd.cid().hex().upper())
         else:
             print("bilinmeyen komut")

@@ -197,6 +197,20 @@ class SD:
     def write_cid(self, cid_bytes):
         self._write_register(26, cid_bytes, "CID")
 
+    def samsung_backdoor_cid(self, cid_bytes):
+        """Samsung/Evo tipi vendor backdoor + CMD26 denemesi (SPI).
+        Kart firmware'i desteklemiyorsa CMD62 r1=4 verir."""
+        for arg in (0xEFAC62EC, 0xEF50):
+            r1, _, _ = self.cmd(62, arg, 0x00)
+            if r1 != 0x00:
+                raise SDError("CMD62 arg=%#x r1=%s" % (arg, r1))
+        # Bilinen evoplus_cid akışındaki Smart Report doğrulaması.
+        self.read_block(0)
+        self._write_register(26, cid_bytes, "CID")
+        r1, _, _ = self.cmd(62, 0x00DECCEE, 0x00)
+        if r1 != 0x00:
+            raise SDError("CMD62 exit r1=%s" % r1)
+
     def try_write_cid_idle(self, cid_bytes):
         """CMD26'yi idle durumda dener (fabrika programlama akisi).
         Donus: True = kabul edilip yazildi, False = reddedildi."""
