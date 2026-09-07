@@ -290,6 +290,10 @@ def main():
     args = [a for a in args if a != "--debug"]
     sd = SDCard(debug=debug)
     try:
+        print("[!] DAT3 yukukte. Karti SIMDI cikarip tekrar tak (5 sn):")
+        for i in range(5, 0, -1):
+            print("    %d..." % i)
+            time.sleep(1)
         sd.init()
         print("init OK")
         if not args or args[0] == "probe":
