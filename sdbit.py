@@ -239,9 +239,11 @@ class SDCard:
         r7 = self.cmd(8, 0x1AA, total_bits=48)
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
+        time.sleep(0.01)
         for _ in range(500):
             self.cmd(55, 0, total_bits=48)
-            r3 = self.cmd(41, 0x00000000, total_bits=48)
+            time.sleep(0.001)
+            r3 = self.cmd(41, 0x40000000, total_bits=48)
             r3b = self.bus.bits_to_bytes(r3) if r3 else None
             if r3b and len(r3b) >= 5 and (r3b[1] & 0x80):
                 log("ACMD41 ready, OCR=%s" % r3b[1:5].hex(), self.debug)
