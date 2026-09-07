@@ -244,21 +244,14 @@ class SDCard:
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
         time.sleep(0.01)
-        # ACMD41 argument must include the host voltage window.  For a
-        # 3.3 V host (and after CMD8=0x1AA), request 2.7-3.6 V:
-        #   OCR[23:15] = 0xFF80, HCS = bit 30.
-        # The previous code sent only HCS (0x40000000), which made the card
-        # return its voltage-window OCR (00FF8000) with power-up bit 0 and
-        # was then incorrectly treated as an initialization timeout.
         for hcs in (0x40000000, 0x00000000):
-            acmd41_arg = 0x00FF8000 | hcs
             for attempt in range(500):
                 self.cmd(55, 0, total_bits=48)
                 time.sleep(0.001)
-                r3 = self.cmd(41, acmd41_arg, total_bits=48)
+                r3 = self.cmd(41, hcs, total_bits=48)
                 r3b = self.bus.bits_to_bytes(r3) if r3 else None
                 if self.debug and attempt < 2:
-                    log("ACMD41(%#x) resp=%s" % (acmd41_arg, r3b.hex() if r3b else "yok"), True)
+                    log("ACMD41(%#x) resp=%s" % (hcs, r3b.hex() if r3b else "yok"), True)
                 ocr = self._find_ready_ocr(r3b)
                 if ocr is not None:
                     log("ACMD41 ready, OCR=%08x" % ocr, self.debug)
@@ -278,7 +271,7 @@ class SDCard:
                 log("CMD1 ready, OCR=%08x" % ocr, self.debug)
                 return True
             time.sleep(0.005)
-        raise RuntimeError("ACMD41/CMD1 timeout: kart initialization ready biti setmedi")
+        raise RuntimeError("ACMD41 timeout")
 
     def _find_ready_ocr(self, response):
         """R3: ilk byte response header, sonraki 4 byte OCR."""
@@ -378,10 +371,17 @@ class SDCard:
         log("%s resp: %s" % (label, r1.hex() if r1 else "yok"), self.debug)
         if not r1:
             raise RuntimeError("CMD26_NO_RESPONSE")
-        # For an R1 response, bit 2 is ILLEGAL_COMMAND and bit 3 is CRC_ERROR.
-        status = r1[-1]
-        if status & 0x04:
-            raise RuntimeError("CMD26_ILLEGAL_COMMAND (R1=%02X)" % status)
+        # R1 is 48 bits: response header + 32-bit card status + CRC7/end.
+        # The previous code incorrectly treated the final CRC byte as the
+        # status byte. For example, raw=1a0000090085 means status=0x00000900
+        # and CRC/end=0x85; it is NOT R1=0x85 and therefore does not indicate
+        # ILLEGAL_COMMAND.
+        if len(r1) < 6:
+            raise RuntimeError("CMD26_BAD_R1_LEN=%d" % len(r1))
+        status = int.from_bytes(r1[1:5], "big")
+        log("%s R1 status=0x%08x" % (label, status), self.debug)
+        if status & 0x00000004:
+            raise RuntimeError("CMD26_ILLEGAL_COMMAND (R1_STATUS=%08X)" % status)
         accepted, dr = self._send_cid_data(cid)
         if not accepted:
             raise RuntimeError("DATA_REJECTED (response=%s)" % dr)
@@ -452,7 +452,7 @@ class SDCard:
             candidates.append(("samsung1", self._vendor_candidate_1))
         if candidate in ("auto", "samsung2"):
             candidates.append(("samsung2", self._vendor_candidate_2))
-        if candidate == "direct":
+        if candidate in ("auto", "direct"):
             candidates.append(("direct", lambda: None))
 
         failures = []
@@ -464,6 +464,11 @@ class SDCard:
                 # candidate, CMD0/init is the safest recovery we have.
                 if name != candidates[0][0]:
                     self._reset_to_identification()
+                    # After CMD0/ACMD41 we are back in identification state.
+                    # CMD3 is only valid after CMD2 has supplied the CID.
+                    retry_cid = self.read_cid()
+                    if retry_cid is None:
+                        raise RuntimeError("RETRY_CID_READ_FAILED")
                     r6b = self._r1(3, 0, "CMD3/R6 retry")
                     if r6b and len(r6b) >= 3:
                         rca = (r6b[1] << 8) | r6b[2]
