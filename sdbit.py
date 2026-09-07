@@ -151,12 +151,16 @@ class Bus:
             self.tx_bit(b, 1)
         self.cmd_reconf(False)
         # Ncr: start biti (0) bekle (en fazla 64 bit)
+        skipped = []
         start = None
         for _ in range(64):
-            if self.rx_bit() == 0:
+            v = self.rx_bit()
+            if v == 0:
                 start = True
                 break
+            skipped.append(v)
         if not start:
+            log("yanit yok (64 bit: %s)" % "".join(map(str, skipped)), self.debug)
             return None
         bits = [0] + self.rx_bits_inner(rx_bits - 1) if rx_bits else [0]
         return bits
@@ -222,6 +226,10 @@ class SDCard:
         r7 = self.cmd(8, 0x1AA, total_bits=48)
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
+        if not r7b and self.mask == 0x09:
+            log("yanit yok -> CRC7 polinom 0x0D ile tekrar", self.debug)
+            self.mask = 0x0D
+            return self.init()
         for _ in range(500):
             self.cmd(55, 0, total_bits=48)
             r3 = self.cmd(41, 0x40000000, total_bits=48)
