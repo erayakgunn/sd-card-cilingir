@@ -248,14 +248,26 @@ class SDCard:
                 r3b = self.bus.bits_to_bytes(r3) if r3 else None
                 if self.debug and attempt < 2:
                     log("ACMD41(%#x) resp=%s" % (hcs, r3b.hex() if r3b else "yok"), True)
-                if r3b and len(r3b) >= 5 and (r3b[1] & 0x80):
-                    log("ACMD41 ready, OCR=%s" % r3b[1:5].hex(), self.debug)
+                ocr = self._find_ready_ocr(r3b)
+                if ocr is not None:
+                    log("ACMD41 ready, OCR=%08x" % ocr, self.debug)
                     return True
                 time.sleep(0.005)
             # Bir sonraki arguman icin karti yeniden idle'a al.
             self.cmd(0, 0, crc=0x4A, expect=False)
             self.bus.clocks_idle(8)
         raise RuntimeError("ACMD41 timeout")
+
+    def _find_ready_ocr(self, response):
+        """R3 yanitindaki 32-bit OCR alanini hizadan bagimsiz bul."""
+        if not response:
+            return None
+        bits = "".join("%08b" % b for b in response)
+        for off in range(0, min(16, len(bits) - 31)):
+            value = int(bits[off:off + 32], 2)
+            if value & 0x80000000 and (value & 0x00FF8000):
+                return value
+        return None
 
     def read_cid(self):
         # CMD2: R2 = 136 bit
