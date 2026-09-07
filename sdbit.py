@@ -288,6 +288,21 @@ def main():
     args = sys.argv[1:]
     debug = "--debug" in args
     args = [a for a in args if a != "--debug"]
+
+    if args and args[0] == "readtest":
+        # init YOK — sadece hat testi
+        bus = Bus(debug=debug)
+        try:
+            print("10 sn: CMD/DAT0 izleniyor. MOSI pinine GND'ye dokun -> CMD=0 gormeliyiz.")
+            for i in range(50):
+                c = bus.get_cmd()
+                d = bus.get_d0()
+                print("CMD=%d DAT0=%d" % (c, d))
+                time.sleep(0.2)
+        finally:
+            bus.close()
+        return
+
     sd = SDCard(debug=debug)
     try:
         print("[!] DAT3 yukukte. Karti SIMDI cikarip tekrar tak (5 sn):")
