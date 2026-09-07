@@ -146,6 +146,7 @@ class Bus:
         """Komut gonder + yanit bitlerini topla. Donus: bit listesi (None olmaz)."""
         # SD-bus: ardışık komutlar arasında Ncs için en az 8 boş clock.
         self.clocks_idle(8)
+        log("CMD%d arg=%#x crc=%02X" % (cmd, arg, crc), self.debug)
         frame = [0, 1]
         v = cmd & 0x3F
         for i in range(5, -1, -1):
@@ -240,7 +241,7 @@ class SDCard:
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
         for _ in range(500):
             self.cmd(55, 0, total_bits=48)
-            r3 = self.cmd(41, 0x40000000, total_bits=48)
+            r3 = self.cmd(41, 0x00000000, total_bits=48)
             r3b = self.bus.bits_to_bytes(r3) if r3 else None
             if r3b and len(r3b) >= 5 and (r3b[1] & 0x80):
                 log("ACMD41 ready, OCR=%s" % r3b[1:5].hex(), self.debug)
