@@ -256,14 +256,17 @@ class SDCard:
         bits = self.cmd(2, 0, total_bits=136)
         if not bits:
             return None
-        return self.bus.bits_to_bytes(bits)
+        raw = self.bus.bits_to_bytes(bits)
+        # R2'nin ilk bayti response header; CID son 16 bayttir.
+        return raw[1:17] if len(raw) >= 17 else raw
 
     def read_cid_selected(self, rca):
         # Secilmis/transfer state'te CID: CMD10 + RCA.
         bits = self.cmd(10, rca << 16, total_bits=136)
         if not bits:
             return None
-        return self.bus.bits_to_bytes(bits)
+        raw = self.bus.bits_to_bytes(bits)
+        return raw[1:17] if len(raw) >= 17 else raw
 
     def program_cid(self, cid):
         b = self.bus
