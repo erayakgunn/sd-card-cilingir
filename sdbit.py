@@ -144,6 +144,8 @@ class Bus:
 
     def send_command(self, cmd, arg, crc, rx_bits=0):
         """Komut gonder + yanit bitlerini topla. Donus: bit listesi (None olmaz)."""
+        # SD-bus: ardışık komutlar arasında Ncs için en az 8 boş clock.
+        self.clocks_idle(8)
         frame = [0, 1]
         v = cmd & 0x3F
         for i in range(5, -1, -1):
