@@ -259,15 +259,11 @@ class SDCard:
         raise RuntimeError("ACMD41 timeout")
 
     def _find_ready_ocr(self, response):
-        """R3 yanitindaki 32-bit OCR alanini hizadan bagimsiz bul."""
-        if not response:
+        """R3: ilk byte response header, sonraki 4 byte OCR."""
+        if not response or len(response) < 5:
             return None
-        bits = "".join(format(b, "08b") for b in response)
-        for off in range(0, min(16, len(bits) - 31)):
-            value = int(bits[off:off + 32], 2)
-            if value & 0x80000000 and (value & 0x00FF8000):
-                return value
-        return None
+        value = int.from_bytes(response[1:5], "big")
+        return value if value & 0x80000000 else None
 
     def read_cid(self):
         # CMD2: R2 = 136 bit
