@@ -38,6 +38,8 @@ def log(msg, debug=True):
 class Bus:
     def __init__(self, chip_path=None, debug=False):
         self.debug = debug
+        self.cmd_out = False
+        self.d0_out = False
         self.req = gpiod.request_lines(
             chip_path or find_chip(),
             consumer="sdbus",
@@ -68,12 +70,14 @@ class Bus:
         self.req.set_value(CLK, Value.INACTIVE)
 
     def cmd_reconf(self, out):
+        self.cmd_out = out
         s = (gpiod.LineSettings(direction=Direction.OUTPUT, bias=Bias.PULL_UP,
                                 output_value=Value.ACTIVE) if out
              else gpiod.LineSettings(direction=Direction.INPUT, bias=Bias.PULL_UP))
         self.req.reconfigure_lines({CMD: s})
 
     def d0_reconf(self, out):
+        self.d0_out = out
         s = (gpiod.LineSettings(direction=Direction.OUTPUT, bias=Bias.PULL_UP,
                                 output_value=Value.ACTIVE) if out
              else gpiod.LineSettings(direction=Direction.INPUT, bias=Bias.PULL_UP))
@@ -89,8 +93,9 @@ class Bus:
 
     def tx_bit(self, cmd_v, d0_v=None):
         self.clk_lo()
-        self.req.set_value(CMD, Value.ACTIVE if cmd_v else Value.INACTIVE)
-        if d0_v is not None:
+        if self.cmd_out:
+            self.req.set_value(CMD, Value.ACTIVE if cmd_v else Value.INACTIVE)
+        if d0_v is not None and self.d0_out:
             self.req.set_value(DAT0, Value.ACTIVE if d0_v else Value.INACTIVE)
         self._spin(BIT_NS // 3)
         self.clk_hi()
@@ -208,6 +213,8 @@ class SDCard:
 
     def init(self):
         b = self.bus
+        b.cmd_reconf(True)
+        b.d0_reconf(True)
         b.clocks_idle(80)
         # CMD0: yanit yok
         self.cmd(0, 0, crc=0x4A, expect=False)
