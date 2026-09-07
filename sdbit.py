@@ -307,6 +307,16 @@ def main():
             sd.program_cid(target)
             raw = sd.read_cid()
             print("readback (ham): %s" % (raw.hex().upper() if raw else "YOK"))
+        elif args[0] == "readtest":
+            # CMD ve DAT0 okuma yolu testi: 10 sn boyunca seviyeleri goster.
+            # MOSI pinini bir jumper ile GND'ye dokunursan CMD=0 gormeliyiz.
+            print("10 sn boyunca CMD/DAT0 okunuyor. MOSI hattina GND'ye dokun ve CMD=0 gorup gormedigimize bak.")
+            for i in range(100):
+                c = sd.bus.get_cmd()
+                d = sd.bus.get_d0()
+                if i % 10 == 0:
+                    print("CMD=%d DAT0=%d" % (c, d))
+                time.sleep(0.1)
         else:
             print("bilinmeyen komut")
     finally:
