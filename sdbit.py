@@ -262,7 +262,7 @@ class SDCard:
         """R3 yanitindaki 32-bit OCR alanini hizadan bagimsiz bul."""
         if not response:
             return None
-        bits = "".join("%08b" % b for b in response)
+        bits = "".join(format(b, "08b") for b in response)
         for off in range(0, min(16, len(bits) - 31)):
             value = int(bits[off:off + 32], 2)
             if value & 0x80000000 and (value & 0x00FF8000):
