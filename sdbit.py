@@ -146,7 +146,6 @@ class Bus:
         """Komut gonder + yanit bitlerini topla. Donus: bit listesi (None olmaz)."""
         # SD-bus: ardışık komutlar arasında Ncs için en az 8 boş clock.
         self.clocks_idle(8)
-        log("CMD%d arg=%#x crc=%02X" % (cmd, arg, crc), self.debug)
         frame = [0, 1]
         v = cmd & 0x3F
         for i in range(5, -1, -1):
@@ -172,7 +171,6 @@ class Bus:
                 break
             skipped.append(v)
         if not start:
-            log("yanit yok (64 bit: %s)" % "".join(map(str, skipped)), self.debug)
             return None
         bits = [0] + self.rx_bits_inner(rx_bits - 1) if rx_bits else [0]
         return bits
