@@ -260,6 +260,9 @@ class SDCard:
 
     def program_cid(self, cid):
         b = self.bus
+        # SD-bus'ta CMD26, CMD2 ile identification state'e gecildikten sonra kullanilir.
+        old_cid = self.read_cid()
+        log("CMD2 onceki CID ham: %s" % (old_cid.hex() if old_cid else "yok"), self.debug)
         bits = self.cmd(26, 0, total_bits=48)
         r1 = self.bus.bits_to_bytes(bits) if bits else None
         log("CMD26 resp: %s" % (r1.hex() if r1 else "yok"), self.debug)
