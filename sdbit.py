@@ -244,14 +244,21 @@ class SDCard:
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
         time.sleep(0.01)
+        # ACMD41 argument must include the host voltage window.  For a
+        # 3.3 V host (and after CMD8=0x1AA), request 2.7-3.6 V:
+        #   OCR[23:15] = 0xFF80, HCS = bit 30.
+        # The previous code sent only HCS (0x40000000), which made the card
+        # return its voltage-window OCR (00FF8000) with power-up bit 0 and
+        # was then incorrectly treated as an initialization timeout.
         for hcs in (0x40000000, 0x00000000):
+            acmd41_arg = 0x00FF8000 | hcs
             for attempt in range(500):
                 self.cmd(55, 0, total_bits=48)
                 time.sleep(0.001)
-                r3 = self.cmd(41, hcs, total_bits=48)
+                r3 = self.cmd(41, acmd41_arg, total_bits=48)
                 r3b = self.bus.bits_to_bytes(r3) if r3 else None
                 if self.debug and attempt < 2:
-                    log("ACMD41(%#x) resp=%s" % (hcs, r3b.hex() if r3b else "yok"), True)
+                    log("ACMD41(%#x) resp=%s" % (acmd41_arg, r3b.hex() if r3b else "yok"), True)
                 ocr = self._find_ready_ocr(r3b)
                 if ocr is not None:
                     log("ACMD41 ready, OCR=%08x" % ocr, self.debug)
@@ -271,7 +278,7 @@ class SDCard:
                 log("CMD1 ready, OCR=%08x" % ocr, self.debug)
                 return True
             time.sleep(0.005)
-        raise RuntimeError("ACMD41 timeout")
+        raise RuntimeError("ACMD41/CMD1 timeout: kart initialization ready biti setmedi")
 
     def _find_ready_ocr(self, response):
         """R3: ilk byte response header, sonraki 4 byte OCR."""
