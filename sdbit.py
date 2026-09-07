@@ -263,6 +263,15 @@ class SDCard:
         # SD-bus'ta CMD26, CMD2 ile identification state'e gecildikten sonra kullanilir.
         old_cid = self.read_cid()
         log("CMD2 onceki CID ham: %s" % (old_cid.hex() if old_cid else "yok"), self.debug)
+        # Bazi kartlar CMD26'yi ancak RCA atanip kart secildikten sonra kabul eder.
+        r6 = self.cmd(3, 0, total_bits=48)
+        r6b = self.bus.bits_to_bytes(r6) if r6 else None
+        log("CMD3/R6: %s" % (r6b.hex() if r6b else "yok"), self.debug)
+        if r6b and len(r6b) >= 3:
+            rca = (r6b[1] << 8) | r6b[2]
+            r7 = self.cmd(7, rca << 16, total_bits=48)
+            r7b = self.bus.bits_to_bytes(r7) if r7 else None
+            log("CMD7/R1: %s (RCA=%04X)" % (r7b.hex() if r7b else "yok", rca), self.debug)
         bits = self.cmd(26, 0, total_bits=48)
         r1 = self.bus.bits_to_bytes(bits) if bits else None
         log("CMD26 resp: %s" % (r1.hex() if r1 else "yok"), self.debug)
