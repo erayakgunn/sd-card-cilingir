@@ -102,20 +102,22 @@ class Bus:
         self._spin(2 * BIT_NS // 3)
 
     def rx_bit(self):
-        """CLK low'da ornekle (kart falling edge'de veriyi kurar)."""
+        """SD-bus verisini rising edge sonrasinda ornekle."""
         self.clk_lo()
         self._spin(BIT_NS // 2)
-        v = self.get_cmd()
         self.clk_hi()
-        self._spin(BIT_NS // 2)
+        self._spin(BIT_NS // 3)
+        v = self.get_cmd()
+        self._spin(BIT_NS // 6)
         return v
 
     def rx_bit_d0(self):
         self.clk_lo()
         self._spin(BIT_NS // 2)
-        v = self.get_d0()
         self.clk_hi()
-        self._spin(BIT_NS // 2)
+        self._spin(BIT_NS // 3)
+        v = self.get_d0()
+        self._spin(BIT_NS // 6)
         return v
 
     def clocks_idle(self, n):
