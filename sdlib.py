@@ -236,40 +236,38 @@ class SD:
         self.init()
         return accepted
 
-    def _cmd_frame_crc(self, cmd, arg, mask):
+    def _cmd_frame_crc(self, cmd, arg):
         arg &= 0xFFFFFFFF
         f = [((cmd & 0x7F) | 0x40),
              (arg >> 24) & 0xFF, (arg >> 16) & 0xFF,
              (arg >> 8) & 0xFF, arg & 0xFF, 0x00]
-        f[5] = (crc7(f[:5], mask) << 1) | 1
+        f[5] = (crc7(f[:5]) << 1) | 1
         return f
 
     def hunt_cid_commit(self, cid_bytes, target_hex):
         """CRC-on ve komut varyantlariyla CID commit arayisi.
         Donus: (bulundu, yontem_adi)."""
         plans = [
-            ("crcon-0x09-cmd26", 0x09, "cmd26"),
-            ("crcon-0x0D-cmd26", 0x0D, "cmd26"),
-            ("crcon-0x09-acmd26", 0x09, "acmd26"),
-            ("crcon-0x0D-acmd26", 0x0D, "acmd26"),
-            ("crcoff-cmd26", None, "cmd26"),
+            ("crcon-cmd26", True, "cmd26"),
+            ("crcoff-cmd26", False, "cmd26"),
+            ("crcon-acmd26", True, "acmd26"),
         ]
-        for name, mask, kind in plans:
+        for name, use_crc, kind in plans:
             r1, _, _ = self.cmd(0, 0, 0x95)
             if r1 != 0x01:
                 raise SDError("CMD0 r1=%#x" % (r1 or 0))
-            if mask is not None:
-                f = self._cmd_frame_crc(59, 1, mask)
+            if use_crc:
+                f = self._cmd_frame_crc(59, 1)
                 rx = self.spi.xfer2(f + [0xFF] * 8)
                 r1, _ = self._r1_of(rx, len(f))
-                log("CMD59(mask %s) r1=%s" % (name.split("-")[1], r1))
+                log("CMD59(crc on) r1=%s" % r1)
                 if r1 != 0x01:
                     continue
             if kind == "acmd26":
-                f = self._cmd_frame_crc(55, 0, mask) if mask else self._send_cmd(55, 0)
+                f = self._cmd_frame_crc(55, 0) if use_crc else self._send_cmd(55, 0)
                 rx = self.spi.xfer2(f + [0xFF] * 8)
                 log("CMD55 r1=%s" % (self._r1_of(rx, len(f))[0],))
-            f = self._cmd_frame_crc(26, 0, mask) if mask else self._send_cmd(26, 0, 0x00)
+            f = self._cmd_frame_crc(26, 0) if use_crc else self._send_cmd(26, 0, 0x00)
             rx = self.spi.xfer2(f + [0xFF] * 8)
             r1, _ = self._r1_of(rx, len(f))
             log("%s CMD26 r1=%s" % (name, r1))
@@ -421,17 +419,17 @@ class SD:
         self._wait_busy(60)
 
 
-def crc7(data, mask):
-    """CRC7, MSB-first; mask: 0x09 (x7+x3+1) veya 0x0D (x7+x3+x2+1)."""
+def crc7(data, mask=0x09):
+    """SD komut CRC7 (dogrulanmis: CMD0->0x4A, CMD8->0x43)."""
     crc = 0
     for b in data:
-        for i in range(7, -1, -1):
-            bit = (b >> i) & 1
-            msb = crc >> 6
-            crc = ((crc << 1) & 0x7F) | bit
-            if msb:
-                crc ^= mask
-    return crc
+        d = b
+        for _ in range(8):
+            crc = (crc << 1) & 0xFF
+            if ((d & 0x80) != 0) != ((crc & 0x80) != 0):
+                crc ^= 0x09
+            d = (d << 1) & 0xFF
+    return crc & 0x7F
 
 
 def crc16(data):

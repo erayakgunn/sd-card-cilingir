@@ -177,16 +177,17 @@ class Bus:
         return self.bits_to_bytes(b8 + [0])[0] & 0xFF
 
 
-def crc7_sd(data, mask):
+def crc7_sd(data, mask=0x09):
+    """SD komut CRC7 (dogrulanmis: CMD0->0x4A, CMD8->0x43)."""
     crc = 0
-    for byte in data:
-        for i in range(7, -1, -1):
-            bit = (byte >> i) & 1
-            msb = crc >> 6
-            crc = ((crc << 1) & 0x7F) | bit
-            if msb:
-                crc ^= mask
-    return crc
+    for b in data:
+        d = b
+        for _ in range(8):
+            crc = (crc << 1) & 0xFF
+            if ((d & 0x80) != 0) != ((crc & 0x80) != 0):
+                crc ^= 0x09
+            d = (d << 1) & 0xFF
+    return crc & 0x7F
 
 
 def crc16_sd(data):
@@ -226,10 +227,6 @@ class SDCard:
         r7 = self.cmd(8, 0x1AA, total_bits=48)
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
-        if not r7b and self.mask == 0x09:
-            log("yanit yok -> CRC7 polinom 0x0D ile tekrar", self.debug)
-            self.mask = 0x0D
-            return self.init()
         for _ in range(500):
             self.cmd(55, 0, total_bits=48)
             r3 = self.cmd(41, 0x40000000, total_bits=48)
