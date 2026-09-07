@@ -254,6 +254,17 @@ class SDCard:
             # Bir sonraki arguman icin karti yeniden idle'a al.
             self.cmd(0, 0, crc=0x4A, expect=False)
             self.bus.clocks_idle(8)
+        # Bazi eski/standart-disi denetleyiciler SD-bus'ta ACMD41 yerine CMD1 kullanir.
+        for attempt in range(500):
+            r1 = self.cmd(1, 0, total_bits=48)
+            r1b = self.bus.bits_to_bytes(r1) if r1 else None
+            if self.debug and attempt < 2:
+                log("CMD1 resp=%s" % (r1b.hex() if r1b else "yok"), True)
+            ocr = self._find_ready_ocr(r1b)
+            if ocr is not None:
+                log("CMD1 ready, OCR=%08x" % ocr, self.debug)
+                return True
+            time.sleep(0.005)
         raise RuntimeError("ACMD41 timeout")
 
     def _find_ready_ocr(self, response):
