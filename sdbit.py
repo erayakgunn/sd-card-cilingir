@@ -93,8 +93,15 @@ class Bus:
 
     def tx_bit(self, cmd_v, d0_v=None):
         self.clk_lo()
-        if self.cmd_out:
-            self.req.set_value(CMD, Value.ACTIVE if cmd_v else Value.INACTIVE)
+        if cmd_v:
+            # SD-bus CMD open-drain: 1 biti icin hatti birak.
+            if self.cmd_out:
+                self.cmd_reconf(False)
+        else:
+            # 0 biti icin hatti low sur.
+            if not self.cmd_out:
+                self.cmd_reconf(True)
+            self.req.set_value(CMD, Value.INACTIVE)
         if d0_v is not None and self.d0_out:
             self.req.set_value(DAT0, Value.ACTIVE if d0_v else Value.INACTIVE)
         self._spin(BIT_NS // 3)
