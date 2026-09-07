@@ -258,12 +258,20 @@ class SDCard:
             return None
         return self.bus.bits_to_bytes(bits)
 
+    def read_cid_selected(self, rca):
+        # Secilmis/transfer state'te CID: CMD10 + RCA.
+        bits = self.cmd(10, rca << 16, total_bits=136)
+        if not bits:
+            return None
+        return self.bus.bits_to_bytes(bits)
+
     def program_cid(self, cid):
         b = self.bus
         # SD-bus'ta CMD26, CMD2 ile identification state'e gecildikten sonra kullanilir.
         old_cid = self.read_cid()
         log("CMD2 onceki CID ham: %s" % (old_cid.hex() if old_cid else "yok"), self.debug)
         # Bazi kartlar CMD26'yi ancak RCA atanip kart secildikten sonra kabul eder.
+        rca = None
         r6 = self.cmd(3, 0, total_bits=48)
         r6b = self.bus.bits_to_bytes(r6) if r6 else None
         log("CMD3/R6: %s" % (r6b.hex() if r6b else "yok"), self.debug)
@@ -304,7 +312,7 @@ class SDCard:
             elif busy_seen:
                 break
         log("busy bitti (busy_seen=%s)" % busy_seen, self.debug)
-        return True
+        return rca
 
 
 def main():
@@ -342,8 +350,8 @@ def main():
             if len(target) != 16:
                 print("CID 16 bayt olmali")
                 return
-            sd.program_cid(target)
-            raw = sd.read_cid()
+            rca = sd.program_cid(target)
+            raw = sd.read_cid_selected(rca) if rca is not None else sd.read_cid()
             print("readback (ham): %s" % (raw.hex().upper() if raw else "YOK"))
         elif args[0] == "readtest":
             # CMD ve DAT0 okuma yolu testi: 10 sn boyunca seviyeleri goster.
