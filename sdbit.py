@@ -452,6 +452,13 @@ class SDCard:
 
     def vendor_probe(self):
         """Vendor komutlarini sadece gozlemler; CMD26 gondermez."""
+        # Vendor komutlari bazi kartlarda ancak secilmis/transfer state'te
+        # cevap verir. Program akisi ile ayni CMD2 -> CMD3 -> CMD7 hazirligi.
+        self.read_cid()
+        r6 = self._r1(3, 0, "CMD3/R6 vendorprobe")
+        if r6 and len(r6) >= 3:
+            rca = (r6[1] << 8) | r6[2]
+            self._r1(7, rca << 16, "CMD7/R1 vendorprobe RCA=%04X" % rca)
         candidates = [
             (62, 0xEFAC62EC, "CMD62 enter Samsung/vendor"),
             (62, 0x0000EF50, "CMD62 unlock"),
