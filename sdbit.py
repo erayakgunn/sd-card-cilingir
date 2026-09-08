@@ -12,10 +12,13 @@ Kullanim:
   python3 sdbit.py cmd26writeprobe --debug # PSN+1 yaz/oku, sonra orijinali geri yukle
   python3 sdbit.py swissbitinfo --debug   # belgeli Swissbit CMD56 omur/firmware bilgisi
   python3 sdbit.py cmd26states --debug    # CMD26'yi guvenli erisilebilir durumlarda sinar
+  python3 sdbit.py safe-runner [rapor.jsonl] [--debug]
+                                           # salt-okunur durum/komut envanteri
 """
 
 import sys
 import time
+import json
 
 import gpiod
 from gpiod.line import Bias, Direction, Value
@@ -462,6 +465,89 @@ class SDCard:
                                (original.hex().upper(), final.hex().upper() if final else "YOK"))
         return original, results
 
+    def safe_runner(self):
+        """Run a repeatable, non-mutating native-SD command inventory.
+
+        Each case begins with CMD0/init. It intentionally excludes write,
+        erase, lock, write-protect, CMD26, and undocumented vendor commands.
+        The returned records contain no user-data blocks.
+        """
+        records = []
+
+        def add_case(name, action):
+            self._reset_to_identification()  # CMD0 + init -> READY
+            started = time.time()
+            try:
+                detail = action()
+                records.append({"case": name, "ok": True,
+                                "elapsed_ms": round((time.time() - started) * 1000, 1),
+                                "detail": detail})
+            except Exception as e:
+                records.append({"case": name, "ok": False,
+                                "elapsed_ms": round((time.time() - started) * 1000, 1),
+                                "error": str(e)})
+
+        def ident_cid():
+            cid = self.read_cid()
+            if cid is None:
+                raise RuntimeError("CMD2_NO_RESPONSE")
+            return {"cid": cid.hex().upper(), "cid_crc_ok": self._cid_crc_ok(cid)}
+
+        def standby_csd():
+            if self.read_cid() is None:
+                raise RuntimeError("CMD2_NO_RESPONSE")
+            r6 = self._r1(3, 0, "CMD3/R6 runner")
+            if not r6 or len(r6) < 6:
+                raise RuntimeError("CMD3_NO_RESPONSE")
+            rca = (r6[1] << 8) | r6[2]
+            bits = self.cmd(9, rca << 16, total_bits=136)
+            raw = self.bus.bits_to_bytes(bits) if bits else None
+            if not raw or len(raw) < 17:
+                raise RuntimeError("CMD9_NO_RESPONSE")
+            return {"rca": "%04X" % rca, "csd": raw[1:17].hex().upper()}
+
+        def transfer_status_cid():
+            rca = self._select_transfer("runner")
+            status_raw = self._r1(13, rca << 16, "CMD13/R1 runner")
+            status = self._r1_status(status_raw)
+            bits = self.cmd(10, rca << 16, total_bits=136)
+            raw = self.bus.bits_to_bytes(bits) if bits else None
+            if status is None or not raw or len(raw) < 17:
+                raise RuntimeError("CMD13_OR_CMD10_NO_RESPONSE")
+            return {"rca": "%04X" % rca, "status": "%08X" % status,
+                    "cid": raw[1:17].hex().upper()}
+
+        def transfer_scr():
+            rca = self._select_transfer("runner")
+            r55 = self._r1(55, rca << 16, "CMD55/R1 runner")
+            r51 = self._r1(51, 0, "ACMD51/R1 runner")
+            if not r55 or not r51:
+                raise RuntimeError("CMD55_OR_ACMD51_NO_RESPONSE")
+            return {"scr": self._read_data_block(8).hex().upper()}
+
+        def swissbit_cmd56():
+            self._select_transfer("runner")
+            raw = self._r1(56, 0x53420001, "CMD56/R1 runner")
+            status = self._r1_status(raw)
+            if status is None or (status & 0x00000004):
+                raise RuntimeError("CMD56_REJECTED")
+            data = self._read_data_block(512)
+            return {"status": "%08X" % status,
+                    "signature": data[:8].hex().upper(),
+                    "raw_prefix_32": data[:32].hex().upper()}
+
+        add_case("IDENT/CMD2", ident_cid)
+        add_case("STBY/CMD9", standby_csd)
+        add_case("TRAN/CMD13+CMD10", transfer_status_cid)
+        add_case("TRAN/ACMD51", transfer_scr)
+        add_case("TRAN/CMD56-53420001", swissbit_cmd56)
+
+        self._reset_to_identification()
+        final_cid = self.read_cid()
+        if final_cid is None:
+            raise RuntimeError("RUNNER_FINAL_CID_READ_FAILED")
+        return records, final_cid
+
     def _cid_crc_ok(self, cid):
         if len(cid) != 16:
             return False
@@ -754,6 +840,17 @@ def main():
             print("  Total cycles     : %d" % info["total_cycles"])
             print("  Average cycles   : %d" % info["average_cycles"])
             print("  Remaining life   : %d%%" % info["remaining_percent"])
+        elif args[0] == "safe-runner":
+            report_path = args[1] if len(args) > 1 else "sdbit-safe-runner.jsonl"
+            records, final_cid = sd.safe_runner()
+            with open(report_path, "w", encoding="utf-8", newline="\n") as f:
+                for record in records:
+                    f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            print("SAFE RUNNER tamamlandi: %d vaka" % len(records))
+            for record in records:
+                print("  %-24s %s" % (record["case"], "OK" if record["ok"] else "FAIL"))
+            print("Final CID: %s" % final_cid.hex().upper())
+            print("Rapor: %s" % report_path)
         elif args[0] == "cmd26states":
             original, results = sd.cmd26_state_matrix()
             print("CMD26 STATE MATRIX (payload her zaman mevcut CID): %s" % original.hex().upper())
