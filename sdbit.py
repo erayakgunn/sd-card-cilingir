@@ -314,6 +314,33 @@ class SDCard:
             log("%s: %s" % (label, raw.hex() if raw else "yok"), self.debug)
         return raw
 
+    def _read_block_d0(self, addr=0):
+        """CMD17 data phase: token + 512 byte + CRC tüket."""
+        bits = self.cmd(17, addr, total_bits=48)
+        raw = self.bus.bits_to_bytes(bits) if bits else None
+        log("CMD17/R1: %s" % (raw.hex() if raw else "yok"), self.debug)
+        if not raw:
+            raise RuntimeError("CMD17_NO_RESPONSE")
+
+        # DAT0 üzerinde FE data tokenini ara.
+        token = None
+        for _ in range(64):
+            b = 0
+            for _ in range(8):
+                b = (b << 1) | self.bus.rx_bit_d0()
+            if b == 0xFE:
+                token = b
+                break
+        if token != 0xFE:
+            raise RuntimeError("CMD17_NO_DATA_TOKEN")
+
+        # 512 byte veri + 2 byte CRC'yi tamamen tüket; aksi halde sonraki
+        # komutun response'u veri akisiyle kaynasir.
+        for _ in range(514 * 8):
+            self.bus.rx_bit_d0()
+        log("CMD17 data consumed: 512 bytes", self.debug)
+        return True
+
     def _cmd62(self, arg, label=None):
         # CMD62 is reserved by the SD specification.  These values are
         # documented for some Samsung controllers; they are NOT claimed to
@@ -734,13 +761,8 @@ class SDCard:
         """Older Samsung/Arduino candidate: EFAC62EC -> EF50 -> CMD17."""
         self._cmd62(0xEFAC62EC, "vendor #2 unlock A")
         self._cmd62(0x0000EF50, "vendor #2 unlock B")
-        # CMD17 is part of the published candidate sequence.  We deliberately
-        # only issue the command and clock a short observation window; reading
-        # an arbitrary 512-byte block here would risk desynchronising the
-        # single-wire bit-bang state if the controller actually accepts it.
-        r = self._r1(17, 0, "CMD17/probe")
-        if r is None:
-            log("CMD17/probe: no R1; continuing to CMD26 candidate", self.debug)
+        # CMD17 data phase must be fully consumed before CMD26.
+        self._read_block_d0(0)
 
     def _vendor_exit(self):
         try:
