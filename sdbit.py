@@ -11,6 +11,7 @@ Kullanim:
   python3 sdbit.py cmd26probe --debug     # mevcut CID ile yalnizca dogrudan CMD26 sinamasi
   python3 sdbit.py cmd26writeprobe --debug # PSN+1 yaz/oku, sonra orijinali geri yukle
   python3 sdbit.py swissbitinfo --debug   # belgeli Swissbit CMD56 omur/firmware bilgisi
+  python3 sdbit.py cmd26states --debug    # CMD26'yi guvenli erisilebilir durumlarda sinar
 """
 
 import sys
@@ -408,9 +409,8 @@ class SDCard:
         if status & 0x00000004:
             raise RuntimeError("CMD56_ILLEGAL_COMMAND (R1_STATUS=%08X)" % status)
         data = self._read_data_block(512)
-        if data[:8] != b"Swissbit":
-            raise RuntimeError("CMD56_UNEXPECTED_SIGNATURE=%s" % data[:8].hex().upper())
         return {
+            "signature": data[:8],
             "cid": data[16:32],
             "firmware": data[32:48].split(b"\0", 1)[0].decode("ascii", "replace"),
             "rated_cycles": int.from_bytes(data[48:52], "big"),
@@ -420,6 +420,47 @@ class SDCard:
             "remaining_percent": data[80],
             "raw": data,
         }
+
+    def cmd26_state_matrix(self):
+        """Try CMD26 in safely reachable state-machine states.
+
+        The CID payload is always the original value. DATA, RCV, and PRG are
+        deliberately excluded: entering them requires a real read/write or
+        register-program operation, so they are not safe diagnostic states.
+        """
+        original = self.read_cid()
+        if original is None or not self._cid_crc_ok(original):
+            raise RuntimeError("STATE_MATRIX_CID_READ_OR_CRC_FAILED")
+        results = []
+
+        def attempt(name, setup):
+            self._reset_to_identification()  # returns to READY
+            try:
+                setup()
+                self._cmd26(original, "CMD26 state=%s" % name)
+                results.append((name, "ACCEPTED"))
+            except Exception as e:
+                results.append((name, "REJECTED: %s" % e))
+
+        attempt("IDLE", lambda: (self.cmd(0, 0, crc=0x4A, expect=False),
+                                  self.bus.clocks_idle(8)))
+        attempt("READY", lambda: None)
+        attempt("IDENT", lambda: self.read_cid())
+
+        def standby():
+            if self.read_cid() is None:
+                raise RuntimeError("CMD2_NO_RESPONSE")
+            if not self._r1(3, 0, "CMD3/R6 state=STBY"):
+                raise RuntimeError("CMD3_NO_RESPONSE")
+        attempt("STBY", standby)
+        attempt("TRAN", lambda: self._select_transfer("state=TRAN"))
+
+        self._reset_to_identification()
+        final = self.read_cid()
+        if final != original:
+            raise RuntimeError("STATE_MATRIX_CID_CHANGED: before=%s after=%s" %
+                               (original.hex().upper(), final.hex().upper() if final else "YOK"))
+        return original, results
 
     def _cid_crc_ok(self, cid):
         if len(cid) != 16:
@@ -531,6 +572,10 @@ class SDCard:
         log("%s R1 status=0x%08x" % (label, status), self.debug)
         if status & 0x00000004:
             raise RuntimeError("CMD26_ILLEGAL_COMMAND (R1_STATUS=%08X)" % status)
+        state = (status >> 9) & 0x0F
+        if state != 4:
+            raise RuntimeError("CMD26_NOT_IN_TRAN_STATE (R1_STATUS=%08X, state=%d)" %
+                               (status, state))
         accepted, dr = self._send_cid_data(cid)
         if not accepted:
             raise RuntimeError("DATA_REJECTED (response=%s)" % dr)
@@ -698,6 +743,10 @@ def main():
         elif args[0] == "swissbitinfo":
             info = sd.swissbit_info()
             print("SWISSBIT CMD56: OK")
+            print("  Signature        : %s" % info["signature"].hex().upper())
+            if info["signature"] != b"Swissbit":
+                print("  Note             : Bu CID/model CMD56 telemetri formatiyla eslesmiyor")
+                print("  Raw[0:64]        : %s" % info["raw"][:64].hex().upper())
             print("  CID              : %s" % info["cid"].hex().upper())
             print("  Firmware         : %s" % info["firmware"])
             print("  Rated cycles     : %d" % info["rated_cycles"])
@@ -705,6 +754,12 @@ def main():
             print("  Total cycles     : %d" % info["total_cycles"])
             print("  Average cycles   : %d" % info["average_cycles"])
             print("  Remaining life   : %d%%" % info["remaining_percent"])
+        elif args[0] == "cmd26states":
+            original, results = sd.cmd26_state_matrix()
+            print("CMD26 STATE MATRIX (payload her zaman mevcut CID): %s" % original.hex().upper())
+            for name, result in results:
+                print("  %-5s %s" % (name, result))
+            print("DATA/RCV/PRG guvenlik nedeniyle denenmedi; final CID dogrulandi.")
         elif args[0] == "cmd26probe":
             # This is the least invasive CMD26 experiment: the payload is
             # exactly the CID read from this card moments earlier.  It does
