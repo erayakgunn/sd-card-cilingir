@@ -549,12 +549,14 @@ class SDCard:
         self.bus.clocks_idle(80)
         self.init()
 
-    def program_cid(self, cid, candidate="auto"):
+    def program_cid(self, cid, candidate="auto", original_cid=None):
         cid = bytes(cid)
         if len(cid) != 16:
             raise ValueError("CID 16 bayt olmali")
 
-        old_cid = self.read_cid()
+        # A caller that has just issued CMD2 can pass that result here.  A
+        # second CMD2 in IDENT state is invalid and produces no response.
+        old_cid = bytes(original_cid) if original_cid is not None else self.read_cid()
         if old_cid is None:
             raise RuntimeError("ORIGINAL_CID_READ_FAILED")
         print("ORIGINAL CID: %s" % old_cid.hex().upper())
@@ -656,7 +658,7 @@ def main():
             if not sd._cid_crc_ok(before):
                 raise RuntimeError("PROBE_CID_CRC_INVALID")
             print("CMD26 PROBE CID (degistirilmeyecek): %s" % before.hex().upper())
-            sd.program_cid(before, candidate="direct")
+            sd.program_cid(before, candidate="direct", original_cid=before)
             print("[!] CMD26 probe sonrasi kart resetleniyor ve CID tekrar okunuyor...")
             sd._reset_to_identification()
             after = sd.read_cid()
