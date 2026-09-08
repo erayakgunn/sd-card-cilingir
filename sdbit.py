@@ -14,6 +14,8 @@ Kullanim:
   python3 sdbit.py cmd26states --debug    # CMD26'yi guvenli erisilebilir durumlarda sinar
   python3 sdbit.py safe-runner [rapor.jsonl] [--debug]
                                            # salt-okunur durum/komut envanteri
+  python3 sdbit.py unsafe-vendor-scan --i-accept-card-loss [rapor.jsonl] [--debug]
+                                           # CID-odakli reserved/vendor komut matrisi
 """
 
 import sys
@@ -550,6 +552,59 @@ class SDCard:
             raise RuntimeError("RUNNER_FINAL_CID_READ_FAILED")
         return records, final_cid
 
+    def unsafe_vendor_scan(self):
+        """Probe reserved vendor commands without sending a data payload.
+
+        This can still alter undocumented controller state, hence every probe
+        gets CMD0/init and its own TRAN transition.  It excludes erase, lock,
+        write-protect and all standard data-write commands.  A response here
+        is only a lead; CID programming is deliberately not attempted by this
+        scan.
+        """
+        candidates = [
+            (60, 0x00000000, "zero"),
+            (60, 0xFFFFFFFF, "all-ones"),
+            (61, 0x00000000, "zero"),
+            (61, 0xFFFFFFFF, "all-ones"),
+            (62, 0x00000000, "zero"),
+            (62, 0xFFFFFFFF, "all-ones"),
+            (62, 0xEFAC62EC, "samsung-enter"),
+            (62, 0x0000EF50, "samsung-unlock-b"),
+            (62, 0x00CCED82, "samsung-unlock-alt"),
+            (62, 0x00DECCEE, "samsung-exit"),
+            (63, 0x00000000, "zero"),
+            (63, 0xFFFFFFFF, "all-ones"),
+        ]
+        records = []
+        baseline = None
+        for cmd, arg, tag in candidates:
+            started = time.time()
+            record = {"cmd": cmd, "arg": "%08X" % arg, "tag": tag}
+            try:
+                self._reset_to_identification()
+                self._select_transfer("unsafe CMD%d" % cmd)
+                raw = self._r1(cmd, arg, "unsafe CMD%d %s" % (cmd, tag))
+                record["response"] = raw.hex().upper() if raw else None
+                status = self._r1_status(raw)
+                if status is not None:
+                    record["status"] = "%08X" % status
+                # Do not send another command to a possible vendor data phase.
+                self._reset_to_identification()
+                cid = self.read_cid()
+                if cid is None:
+                    raise RuntimeError("POST_PROBE_CID_NO_RESPONSE")
+                if baseline is None:
+                    baseline = cid
+                record["post_cid"] = cid.hex().upper()
+                record["cid_changed"] = cid != baseline
+                record["ok"] = True
+            except Exception as e:
+                record["ok"] = False
+                record["error"] = str(e)
+            record["elapsed_ms"] = round((time.time() - started) * 1000, 1)
+            records.append(record)
+        return records, baseline
+
     def _cid_crc_ok(self, cid):
         if len(cid) != 16:
             return False
@@ -852,6 +907,24 @@ def main():
             for record in records:
                 print("  %-24s %s" % (record["case"], "OK" if record["ok"] else "FAIL"))
             print("Final CID: %s" % final_cid.hex().upper())
+            print("Rapor: %s" % report_path)
+        elif args[0] == "unsafe-vendor-scan":
+            confirm = "--i-accept-card-loss"
+            if confirm not in args:
+                raise RuntimeError("UNSAFE_SCAN_REQUIRES_%s" % confirm)
+            paths = [a for a in args[1:] if a != confirm]
+            report_path = paths[0] if paths else "sdbit-unsafe-vendor-scan.jsonl"
+            records, baseline = sd.unsafe_vendor_scan()
+            with open(report_path, "w", encoding="utf-8", newline="\n") as f:
+                for record in records:
+                    f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            print("UNSAFE VENDOR SCAN tamamlandi: %d deneme" % len(records))
+            for record in records:
+                response = record.get("response") or "NO_RESPONSE"
+                result = "OK" if record.get("ok") else "FAIL"
+                print("  CMD%-2d %-20s %-11s %s" %
+                      (record["cmd"], record["tag"], result, response))
+            print("Baseline CID: %s" % (baseline.hex().upper() if baseline else "YOK"))
             print("Rapor: %s" % report_path)
         elif args[0] == "cmd26states":
             original, results = sd.cmd26_state_matrix()
