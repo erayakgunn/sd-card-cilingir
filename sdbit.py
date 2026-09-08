@@ -311,6 +311,60 @@ class SDCard:
         # be a Swissbit command.  Keep every candidate visible in --debug.
         return self._r1(62, arg, label or ("CMD62 %#010x" % arg))
 
+    def _r1_status(self, raw):
+        """Return the 32-bit status field from a native R1/R1b response."""
+        if not raw or len(raw) < 6:
+            return None
+        return int.from_bytes(raw[1:5], "big")
+
+    def _wait_r1b(self, label, timeout_s=1.0):
+        """Clock DAT0 until an R1b command has completed.
+
+        CMD7 is R1b in native SD mode.  Sending the following command before
+        its DAT0 busy period has ended can make an otherwise healthy card look
+        as though it gives no response to every vendor command.
+        """
+        b = self.bus
+        deadline = time.time() + timeout_s
+        busy_seen = False
+        while time.time() < deadline:
+            level = b.rx_bit_d0()
+            if level == 0:
+                busy_seen = True
+            elif busy_seen:
+                log("%s R1b busy bitti" % label, self.debug)
+                return True
+            elif not busy_seen:
+                # A card is allowed to have no observable busy interval.
+                return True
+        raise RuntimeError("%s R1b DAT0 busy timeout" % label)
+
+    def _select_transfer(self, label=""):
+        """Enter TRAN state and verify it with CMD13; no vendor command here."""
+        self.read_cid()
+        r6 = self._r1(3, 0, "CMD3/R6 %s" % label)
+        if not r6 or len(r6) < 6:
+            raise RuntimeError("CMD3_NO_RESPONSE")
+        rca = (r6[1] << 8) | r6[2]
+        if rca == 0:
+            raise RuntimeError("CMD3_INVALID_RCA")
+        r1b = self._r1(7, rca << 16, "CMD7/R1b %s RCA=%04X" % (label, rca))
+        if not r1b:
+            raise RuntimeError("CMD7_NO_RESPONSE")
+        self._wait_r1b("CMD7")
+        status_raw = self._r1(13, rca << 16, "CMD13/R1 %s" % label)
+        status = self._r1_status(status_raw)
+        if status is None:
+            raise RuntimeError("CMD13_NO_RESPONSE")
+        state = (status >> 9) & 0x0F
+        ready = bool(status & 0x00000100)
+        log("CMD13 state=%d (%s), ready=%s, status=0x%08X" %
+            (state, "TRAN" if state == 4 else "not-TRAN", ready, status), self.debug)
+        if state != 4:
+            raise RuntimeError("CARD_NOT_IN_TRAN_STATE (CMD13=0x%08X, state=%d)" %
+                               (status, state))
+        return rca
+
     def _cid_crc_ok(self, cid):
         if len(cid) != 16:
             return False
@@ -453,12 +507,15 @@ class SDCard:
     def vendor_probe(self):
         """Vendor komutlarini sadece gozlemler; CMD26 gondermez."""
         # Vendor komutlari bazi kartlarda ancak secilmis/transfer state'te
-        # cevap verir. Program akisi ile ayni CMD2 -> CMD3 -> CMD7 hazirligi.
-        self.read_cid()
-        r6 = self._r1(3, 0, "CMD3/R6 vendorprobe")
-        if r6 and len(r6) >= 3:
-            rca = (r6[1] << 8) | r6[2]
-            self._r1(7, rca << 16, "CMD7/R1 vendorprobe RCA=%04X" % rca)
+        # cevap verir.  CMD7'nin R1b/DAT0 fazini tamamlayip CMD13 ile TRAN
+        # durumunu dogrulamadan prob yapmayalim.
+        try:
+            self._select_transfer("vendorprobe")
+            print("TRANSFER_STATE: OK (CMD13 ile dogrulandi)")
+        except Exception as e:
+            print("TRANSFER_STATE: FAILED: %s" % e)
+            print("vendorprobe durduruldu; vendor komutu/CMD26 gonderilmedi.")
+            return
         candidates = [
             (62, 0xEFAC62EC, "CMD62 enter Samsung/vendor"),
             (62, 0x0000EF50, "CMD62 unlock"),
@@ -505,11 +562,7 @@ class SDCard:
         # CMD3 -> RCA, then CMD7 -> selected state.  Keep this before every
         # vendor candidate because controllers differ in which state they
         # expect for reserved commands.
-        r6b = self._r1(3, 0, "CMD3/R6")
-        rca = None
-        if r6b and len(r6b) >= 3:
-            rca = (r6b[1] << 8) | r6b[2]
-            self._r1(7, rca << 16, "CMD7/R1 (RCA=%04X)" % rca)
+        rca = self._select_transfer("program")
 
         candidates = []
         if candidate in ("auto", "samsung1"):
@@ -530,13 +583,7 @@ class SDCard:
                     self._reset_to_identification()
                     # After CMD0/ACMD41 we are back in identification state.
                     # CMD3 is only valid after CMD2 has supplied the CID.
-                    retry_cid = self.read_cid()
-                    if retry_cid is None:
-                        raise RuntimeError("RETRY_CID_READ_FAILED")
-                    r6b = self._r1(3, 0, "CMD3/R6 retry")
-                    if r6b and len(r6b) >= 3:
-                        rca = (r6b[1] << 8) | r6b[2]
-                        self._r1(7, rca << 16, "CMD7/R1 retry (RCA=%04X)" % rca)
+                    rca = self._select_transfer("retry")
                 unlock()
                 self._cmd26(cid, "%s CMD26" % name)
                 self._vendor_exit()
