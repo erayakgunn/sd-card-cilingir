@@ -450,6 +450,24 @@ class SDCard:
         except Exception as e:
             log("vendor exit hata: %s" % e, self.debug)
 
+    def vendor_probe(self):
+        """Vendor komutlarini sadece gozlemler; CMD26 gondermez."""
+        candidates = [
+            (62, 0xEFAC62EC, "CMD62 enter Samsung/vendor"),
+            (62, 0x0000EF50, "CMD62 unlock"),
+            (62, 0x00CCED82, "CMD62 unlock-alt"),
+            (60, 0, "CMD60 arg0"),
+            (61, 0, "CMD61 arg0"),
+            (63, 0, "CMD63 arg0"),
+        ]
+        for cmd, arg, label in candidates:
+            try:
+                raw = self._r1(cmd, arg, label)
+                print("%s: %s" % (label, raw.hex().upper() if raw else "NO_RESPONSE"))
+            except Exception as e:
+                print("%s: ERROR %s" % (label, e))
+        print("vendorprobe tamamlandi; CMD26 gonderilmedi.")
+
     def _reset_to_identification(self):
         """Reset the card and run initialization again for a real readback."""
         self.bus.d0_reconf(True)
@@ -557,6 +575,8 @@ def main():
         if not args or args[0] == "probe":
             raw = sd.read_cid()
             print("R2 (136 bit, ham): %s" % (raw.hex().upper() if raw else "YOK"))
+        elif args[0] == "vendorprobe":
+            sd.vendor_probe()
         elif args and args[0] in ("program", "restore") and (len(args) > 1 or args[0] == "restore"):
             requested = SOURCE_CID if args[0] == "restore" and len(args) == 1 else bytes.fromhex(args[1])
             if len(requested) != 16:
