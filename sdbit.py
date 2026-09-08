@@ -8,6 +8,7 @@ Kullanim:
   python3 sdbit.py program <hex16> [--fix-crc] [auto|samsung1|samsung2|direct]
                                            # vendor unlock -> CMD26 -> reset -> readback
   python3 sdbit.py restore [hex16] [--fix-crc] # kaynak CID'i geri yukle (varsayilan: SOURCE_CID)
+  python3 sdbit.py cmd26probe --debug     # mevcut CID ile yalnizca dogrudan CMD26 sinamasi
 """
 
 import sys
@@ -586,7 +587,10 @@ class SDCard:
                     rca = self._select_transfer("retry")
                 unlock()
                 self._cmd26(cid, "%s CMD26" % name)
-                self._vendor_exit()
+                # "direct" yolu kasitli olarak hicbir vendor komutu
+                # gondermez; bu sayede CMD26'nin kendisini ayri sinayabiliriz.
+                if name != "direct":
+                    self._vendor_exit()
                 print("PROGRAM COMMAND ACCEPTED: %s" % name)
                 return rca, old_cid
             except Exception as e:
@@ -594,7 +598,8 @@ class SDCard:
                 failures.append(msg)
                 print("FAIL: %s" % msg)
                 log(msg, True)
-                self._vendor_exit()
+                if name != "direct":
+                    self._vendor_exit()
 
         raise RuntimeError("ALL_CID_PROGRAM_METHODS_FAILED: " + " | ".join(failures))
 
@@ -631,6 +636,25 @@ def main():
             print("R2 (136 bit, ham): %s" % (raw.hex().upper() if raw else "YOK"))
         elif args[0] == "vendorprobe":
             sd.vendor_probe()
+        elif args[0] == "cmd26probe":
+            # This is the least invasive CMD26 experiment: the payload is
+            # exactly the CID read from this card moments earlier.  It does
+            # not use CMD62 or any claimed vendor unlock sequence.
+            before = sd.read_cid()
+            if before is None:
+                raise RuntimeError("PROBE_CID_READ_FAILED")
+            if not sd._cid_crc_ok(before):
+                raise RuntimeError("PROBE_CID_CRC_INVALID")
+            print("CMD26 PROBE CID (degistirilmeyecek): %s" % before.hex().upper())
+            sd.program_cid(before, candidate="direct")
+            print("[!] CMD26 probe sonrasi kart resetleniyor ve CID tekrar okunuyor...")
+            sd._reset_to_identification()
+            after = sd.read_cid()
+            print("READBACK CID: %s" % (after.hex().upper() if after else "YOK"))
+            if after != before:
+                raise RuntimeError("CMD26_PROBE_READBACK_MISMATCH: before=%s after=%s" %
+                                   (before.hex().upper(), after.hex().upper() if after else "YOK"))
+            print("CMD26 PROBE VERIFY OK (CID degismedi)")
         elif args and args[0] in ("program", "restore") and (len(args) > 1 or args[0] == "restore"):
             requested = SOURCE_CID if args[0] == "restore" and len(args) == 1 else bytes.fromhex(args[1])
             if len(requested) != 16:
