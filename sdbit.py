@@ -345,70 +345,64 @@ class SDCard:
         # token in a 1-bit native SD implementation.
         b.d0_reconf(False)
 
-        # Native SD data-response token is one byte:
-        #   xxx0sss1
-        # where sss=010 accepted, 101 CRC error, 110 write error.
-        # Capture several clocks and search at every bit offset rather than
-        # looking for arbitrary 3-bit substrings.  The old parser could report
-        # accepted=True and error=True simultaneously for unrelated bit
-        # patterns.
-        dr_bits = [b.rx_bit_d0() for _ in range(32)]
-        dr_raw = "".join(map(str, dr_bits))
-        log("data-response raw bitleri: %s" % dr_raw, self.debug)
-
+        # Native SD data-response token is one byte: xxx0sss1.
+        # sss=010 accepted, 101 CRC error, 110 write error.
+        # Capture until a real token is found, then switch immediately to
+        # DAT0-busy monitoring. Do NOT consume a fixed 32-bit window first.
+        dr_bits = []
         token = None
         token_pos = None
         token_kind = None
         token_status = None
-        for pos in range(0, len(dr_bits) - 7):
-            byte = 0
-            for bit in dr_bits[pos:pos + 8]:
-                byte = (byte << 1) | bit
-            # x x x 0 status[2:0] 1 -> low 5 bits are significant.
-            low5 = byte & 0x1F
-            if low5 in (0x05, 0x0B, 0x0D):
-                token = byte
-                token_pos = pos
-                token_status = (byte >> 1) & 0x07
-                token_kind = {
-                    0x05: "accepted",
-                    0x0B: "crc_error",
-                    0x0D: "write_error",
-                }.get(low5, "other")
-                break
 
+        for _ in range(32):
+            dr_bits.append(b.rx_bit_d0())
+            if len(dr_bits) >= 8:
+                byte = 0
+                for bit in dr_bits[-8:]:
+                    byte = (byte << 1) | bit
+                low5 = byte & 0x1F
+                if low5 in (0x05, 0x0B, 0x0D):
+                    token = byte
+                    token_pos = len(dr_bits) - 8
+                    token_status = (byte >> 1) & 0x07
+                    token_kind = {
+                        0x05: "accepted",
+                        0x0B: "crc_error",
+                        0x0D: "write_error",
+                    }[low5]
+                    break
+
+        dr_raw = "".join(map(str, dr_bits))
+        log("data-response raw bitleri: %s" % dr_raw, self.debug)
         log("data-response token: %s pos=%s kind=%s status=%s" %
-            (("0x%02X" % token) if token is not None else "YOK",
+            ((("0x%02X" % token) if token is not None else "YOK"),
              token_pos if token_pos is not None else "-",
              token_kind or "-",
-             ("%03d" % token_status) if token_status is not None else "-"),
+             (("%03d" % token_status) if token_status is not None else "-")),
             self.debug)
 
         if token is None:
             raise RuntimeError("DATA_RESPONSE_INVALID raw=%s" % dr_raw)
-
         if token_kind != "accepted":
-            raise RuntimeError("DATA_REJECTED response=0x%02X kind=%s raw=%s" %
+            raise RuntimeError("DATA_REJECTED token=0x%02X kind=%s raw=%s" %
                                (token, token_kind, dr_raw))
 
-        # After the response token, DAT0 is held low while the internal
-        # programming operation is in progress.  It may also already be high
-        # if the operation completes immediately.
+        # The token has now been consumed. Start busy timing immediately.
+        # A CID program can legitimately take longer than the previous 3 s
+        # diagnostic limit, so use 10 s here.
         t0 = time.time()
         busy_seen = False
-        while time.time() - t0 < 3.0:
+        timeout_s = 10.0
+        while time.time() - t0 < timeout_s:
             v = b.rx_bit_d0()
             if v == 0:
                 busy_seen = True
             elif busy_seen:
-                break
-            # If no busy period was observed, give the card a few clocks to
-            # present the first high level rather than declaring success from
-            # an unrelated idle sample.
-        if time.time() - t0 >= 3.0:
-            raise RuntimeError("PROGRAM_TIMEOUT: DAT0 busy 3s+")
-        log("busy bitti (busy_seen=%s)" % busy_seen, self.debug)
-        return True, ("0x%02X" % token)
+                log("busy bitti elapsed=%.3fs" % (time.time() - t0), self.debug)
+                return True, "accepted"
+
+        raise RuntimeError("PROGRAM_TIMEOUT: DAT0 busy %.1fs+ (accepted=True)" % timeout_s)
 
     def _cmd26(self, cid, label="CMD26"):
         bits = self.cmd(26, 0, total_bits=48)
