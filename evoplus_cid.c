@@ -35,7 +35,9 @@ static int acmd(int fd, unsigned opcode, unsigned arg, unsigned flags,
     c.arg = arg;
     c.flags = flags;
     c.write_flag = write_flag;
-    c.data_timeout_ns = 0x10000000;
+    /* CID programming can exceed the short timeout used by old examples. */
+    c.data_timeout_ns = 0xFFFFFFFFu;
+    c.cmd_timeout_ms = 10000;
     if (data) {
         c.blksz = blksz;
         c.blocks = 1;
