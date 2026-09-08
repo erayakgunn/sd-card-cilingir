@@ -504,18 +504,20 @@ class SDCard:
             raw = self.bus.bits_to_bytes(bits) if bits else None
             if not raw or len(raw) < 17:
                 raise RuntimeError("CMD9_NO_RESPONSE")
-            return {"rca": "%04X" % rca, "csd": raw[1:17].hex().upper()}
+            bits10 = self.cmd(10, rca << 16, total_bits=136)
+            raw10 = self.bus.bits_to_bytes(bits10) if bits10 else None
+            if not raw10 or len(raw10) < 17:
+                raise RuntimeError("CMD10_NO_RESPONSE")
+            return {"rca": "%04X" % rca, "csd": raw[1:17].hex().upper(),
+                    "cid": raw10[1:17].hex().upper()}
 
-        def transfer_status_cid():
+        def transfer_status():
             rca = self._select_transfer("runner")
             status_raw = self._r1(13, rca << 16, "CMD13/R1 runner")
             status = self._r1_status(status_raw)
-            bits = self.cmd(10, rca << 16, total_bits=136)
-            raw = self.bus.bits_to_bytes(bits) if bits else None
-            if status is None or not raw or len(raw) < 17:
-                raise RuntimeError("CMD13_OR_CMD10_NO_RESPONSE")
-            return {"rca": "%04X" % rca, "status": "%08X" % status,
-                    "cid": raw[1:17].hex().upper()}
+            if status is None:
+                raise RuntimeError("CMD13_NO_RESPONSE")
+            return {"rca": "%04X" % rca, "status": "%08X" % status}
 
         def transfer_scr():
             rca = self._select_transfer("runner")
@@ -537,8 +539,8 @@ class SDCard:
                     "raw_prefix_32": data[:32].hex().upper()}
 
         add_case("IDENT/CMD2", ident_cid)
-        add_case("STBY/CMD9", standby_csd)
-        add_case("TRAN/CMD13+CMD10", transfer_status_cid)
+        add_case("STBY/CMD9+CMD10", standby_csd)
+        add_case("TRAN/CMD13", transfer_status)
         add_case("TRAN/ACMD51", transfer_scr)
         add_case("TRAN/CMD56-53420001", swissbit_cmd56)
 
