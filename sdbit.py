@@ -10,6 +10,7 @@ Kullanim:
   python3 sdbit.py restore [hex16] [--fix-crc] # kaynak CID'i geri yukle (varsayilan: SOURCE_CID)
   python3 sdbit.py cmd26probe --debug     # mevcut CID ile yalnizca dogrudan CMD26 sinamasi
   python3 sdbit.py cmd26writeprobe --debug # PSN+1 yaz/oku, sonra orijinali geri yukle
+  python3 sdbit.py swissbitinfo --debug   # belgeli Swissbit CMD56 omur/firmware bilgisi
 """
 
 import sys
@@ -375,6 +376,51 @@ class SDCard:
                                (status, state))
         return rca
 
+    def _read_data_block(self, length=512, timeout_s=1.0):
+        """Read one native-SD DAT0 data block after an ADTC read command."""
+        b = self.bus
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if b.rx_bit_d0() == 0:  # data start bit
+                break
+        else:
+            raise RuntimeError("DATA_START_TIMEOUT")
+        data_bits = [b.rx_bit_d0() for _ in range(length * 8)]
+        crc_bits = [b.rx_bit_d0() for _ in range(16)]
+        end = b.rx_bit_d0()
+        if end != 1:
+            raise RuntimeError("DATA_END_BIT_INVALID=%d" % end)
+        data = b.bits_to_bytes(data_bits)
+        got_crc = int("".join(str(v) for v in crc_bits), 2)
+        want_crc = crc16_sd(data)
+        if got_crc != want_crc:
+            raise RuntimeError("DATA_CRC16_INVALID got=%04X expected=%04X" %
+                               (got_crc, want_crc))
+        return data
+
+    def swissbit_info(self):
+        """Read Swissbit's documented CMD56 lifetime-monitoring block."""
+        self._select_transfer("swissbitinfo")
+        raw = self._r1(56, 0x53420001, "CMD56 Swissbit lifetime")
+        status = self._r1_status(raw)
+        if status is None:
+            raise RuntimeError("CMD56_NO_RESPONSE")
+        if status & 0x00000004:
+            raise RuntimeError("CMD56_ILLEGAL_COMMAND (R1_STATUS=%08X)" % status)
+        data = self._read_data_block(512)
+        if data[:8] != b"Swissbit":
+            raise RuntimeError("CMD56_UNEXPECTED_SIGNATURE=%s" % data[:8].hex().upper())
+        return {
+            "cid": data[16:32],
+            "firmware": data[32:48].split(b"\0", 1)[0].decode("ascii", "replace"),
+            "rated_cycles": int.from_bytes(data[48:52], "big"),
+            "max_cycles": int.from_bytes(data[52:56], "big"),
+            "total_cycles": int.from_bytes(data[56:60], "big"),
+            "average_cycles": int.from_bytes(data[60:64], "big"),
+            "remaining_percent": data[80],
+            "raw": data,
+        }
+
     def _cid_crc_ok(self, cid):
         if len(cid) != 16:
             return False
@@ -649,6 +695,16 @@ def main():
             print("R2 (136 bit, ham): %s" % (raw.hex().upper() if raw else "YOK"))
         elif args[0] == "vendorprobe":
             sd.vendor_probe()
+        elif args[0] == "swissbitinfo":
+            info = sd.swissbit_info()
+            print("SWISSBIT CMD56: OK")
+            print("  CID              : %s" % info["cid"].hex().upper())
+            print("  Firmware         : %s" % info["firmware"])
+            print("  Rated cycles     : %d" % info["rated_cycles"])
+            print("  Max cycles       : %d" % info["max_cycles"])
+            print("  Total cycles     : %d" % info["total_cycles"])
+            print("  Average cycles   : %d" % info["average_cycles"])
+            print("  Remaining life   : %d%%" % info["remaining_percent"])
         elif args[0] == "cmd26probe":
             # This is the least invasive CMD26 experiment: the payload is
             # exactly the CID read from this card moments earlier.  It does
