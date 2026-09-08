@@ -244,7 +244,8 @@ class SDCard:
         r7b = self.bus.bits_to_bytes(r7) if r7 else None
         log("CMD8 resp: %s" % (r7b.hex() if r7b else "yok"), self.debug)
         time.sleep(0.01)
-        for hcs in (0x40000000, 0x00000000):
+        # Host voltage window 2.7-3.6 V (OCR[23:15]=0xFF80) plus HCS.
+        for hcs in (0x40FF8000, 0x00FF8000):
             for attempt in range(500):
                 self.cmd(55, 0, total_bits=48)
                 time.sleep(0.001)
