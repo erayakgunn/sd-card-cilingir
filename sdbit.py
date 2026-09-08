@@ -9,6 +9,7 @@ Kullanim:
                                            # vendor unlock -> CMD26 -> reset -> readback
   python3 sdbit.py restore [hex16] [--fix-crc] # kaynak CID'i geri yukle (varsayilan: SOURCE_CID)
   python3 sdbit.py cmd26probe --debug     # mevcut CID ile yalnizca dogrudan CMD26 sinamasi
+  python3 sdbit.py cmd26writeprobe --debug # PSN+1 yaz/oku, sonra orijinali geri yukle
 """
 
 import sys
@@ -667,6 +668,42 @@ def main():
                 raise RuntimeError("CMD26_PROBE_READBACK_MISMATCH: before=%s after=%s" %
                                    (before.hex().upper(), after.hex().upper() if after else "YOK"))
             print("CMD26 PROBE VERIFY OK (CID degismedi)")
+        elif args[0] == "cmd26writeprobe":
+            # A same-value write only proves that the command/data path was
+            # accepted.  Change one reversible field (PSN), verify it after a
+            # reset, then restore the exact original CID and verify again.
+            before = sd.read_cid()
+            if before is None:
+                raise RuntimeError("WRITE_PROBE_CID_READ_FAILED")
+            if not sd._cid_crc_ok(before):
+                raise RuntimeError("WRITE_PROBE_CID_CRC_INVALID")
+            changed = bytearray(before)
+            psn = (int.from_bytes(changed[9:13], "big") + 1) & 0xFFFFFFFF
+            changed[9:13] = psn.to_bytes(4, "big")
+            changed = sd._cid_with_valid_crc(changed)
+            print("WRITE PROBE ORIGINAL: %s" % before.hex().upper())
+            print("WRITE PROBE TARGET  : %s (yalnizca PSN +1)" % changed.hex().upper())
+            sd.program_cid(changed, candidate="direct", original_cid=before)
+            print("[!] Degisiklik sonrasi reset/readback...")
+            sd._reset_to_identification()
+            after = sd.read_cid()
+            print("WRITE PROBE READBACK: %s" % (after.hex().upper() if after else "YOK"))
+            if after != changed:
+                if after == before:
+                    print("CMD26 WRITE PROBE: kabul edildi ama CID commit etmedi.")
+                    return
+                raise RuntimeError("WRITE_PROBE_UNEXPECTED_CID: before=%s after=%s" %
+                                   (before.hex().upper(), after.hex().upper() if after else "YOK"))
+            print("CMD26 WRITE PROBE: CID commit etti; orijinal CID geri yukleniyor...")
+            # after was read by CMD2, therefore the card is already IDENT.
+            sd.program_cid(before, candidate="direct", original_cid=after)
+            sd._reset_to_identification()
+            restored = sd.read_cid()
+            print("RESTORE READBACK: %s" % (restored.hex().upper() if restored else "YOK"))
+            if restored != before:
+                raise RuntimeError("WRITE_PROBE_RESTORE_FAILED: expected=%s got=%s" %
+                                   (before.hex().upper(), restored.hex().upper() if restored else "YOK"))
+            print("CMD26 WRITE PROBE VERIFY OK (orijinal CID geri yuklendi)")
         elif args and args[0] in ("program", "restore") and (len(args) > 1 or args[0] == "restore"):
             requested = SOURCE_CID if args[0] == "restore" and len(args) == 1 else bytes.fromhex(args[1])
             if len(requested) != 16:
