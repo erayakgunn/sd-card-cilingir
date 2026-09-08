@@ -340,9 +340,17 @@ class SDCard:
                 return True
         raise RuntimeError("%s R1b DAT0 busy timeout" % label)
 
-    def _select_transfer(self, label=""):
-        """Enter TRAN state and verify it with CMD13; no vendor command here."""
-        self.read_cid()
+    def _select_transfer(self, label="", already_identified=False):
+        """Enter TRAN state and verify it with CMD13; no vendor command here.
+
+        CMD2 advances a card from READY to IDENT.  Do not send it again when
+        the caller has just read CID and therefore already put the card in
+        IDENT state.
+        """
+        if not already_identified:
+            cid = self.read_cid()
+            if cid is None:
+                raise RuntimeError("CMD2_CID_READ_FAILED")
         r6 = self._r1(3, 0, "CMD3/R6 %s" % label)
         if not r6 or len(r6) < 6:
             raise RuntimeError("CMD3_NO_RESPONSE")
@@ -563,7 +571,9 @@ class SDCard:
         # CMD3 -> RCA, then CMD7 -> selected state.  Keep this before every
         # vendor candidate because controllers differ in which state they
         # expect for reserved commands.
-        rca = self._select_transfer("program")
+        # old_cid was obtained with CMD2 immediately above, so the card is
+        # already in IDENT state and the next valid command is CMD3.
+        rca = self._select_transfer("program", already_identified=True)
 
         candidates = []
         if candidate in ("auto", "samsung1"):
