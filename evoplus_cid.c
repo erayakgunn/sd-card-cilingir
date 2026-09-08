@@ -1,6 +1,6 @@
 /* Samsung Evo CID backdoor, native Linux SD/MMC host only.
  * Build: gcc -O2 -Wall -o evoplus_cid evoplus_cid.c
- * Use:   sudo ./evoplus_cid /dev/mmcblk0 <32-hex-CID>
+ * Use:   sudo ./evoplus_cid /dev/mmcblk0 <30/32-hex-CID> [alt]
  *
  * This is controller-specific. It is not a generic CID writer.
  */
@@ -91,8 +91,8 @@ static int parse_cid(const char *s, unsigned char cid[16])
 int main(int argc, char **argv)
 {
     unsigned char cid[16];
-    if (argc != 3 || parse_cid(argv[2], cid)) {
-        fprintf(stderr, "usage: sudo %s /dev/mmcblkN <30-or-32-hex-CID>\n", argv[0]);
+    if ((argc != 3 && argc != 4) || parse_cid(argv[2], cid)) {
+        fprintf(stderr, "usage: sudo %s /dev/mmcblkN <30-or-32-hex-CID> [alt]\n", argv[0]);
         return 2;
     }
     int fd = open(argv[1], O_RDWR);
@@ -102,8 +102,15 @@ int main(int argc, char **argv)
     for (int i = 0; i < 16; i++) printf("%02X", cid[i]);
     puts("");
 
-    if (vendor(fd, 0xEFAC62EC) || vendor(fd, 0xEF50)) {
+    if (vendor(fd, 0xEFAC62EC)) {
         fprintf(stderr, "Samsung vendor unlock reddedildi; CID yazilmadi.\n");
+        close(fd);
+        return 1;
+    }
+    unsigned unlock_arg = (argc == 4 && strcmp(argv[3], "alt") == 0)
+        ? 0x00CCED82 : 0xEF50;
+    if (vendor(fd, unlock_arg)) {
+        fprintf(stderr, "Samsung CID unlock argumani reddedildi; CID yazilmadi.\n");
         close(fd);
         return 1;
     }
